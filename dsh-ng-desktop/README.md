@@ -4,6 +4,8 @@
 
 项目当前处于重构基线：旧的 Win32 托盘、npm 安装调度和 WebView 实验实现已经移除。后续将按照 Spec 实现平台安装器、原生安装引导、npx 私有缓存、DSH 进程监督、Avalonia 托盘、内嵌 DSH Web UI 和干净卸载。
 
+正式安装包仅通过 GitHub Releases 发布。正式 .NET 产物以 Native AOT、自包含构建为准入条件，同时支持非 AOT self-contained 安装和普通源码构建。
+
 ## 开发指引
 对于开发者或接入的 AI Agent，请按照以下规范阅读开发文档（请注意上下文不要越界读取其它无关项目）：
 1. `specs/1_REQUIREMENTS.md` - 了解需求边界
