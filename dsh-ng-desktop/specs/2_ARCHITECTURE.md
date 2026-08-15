@@ -65,8 +65,11 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 - 安装包负载目录与目标 `InstallRoot` 必须不同。`IClientDeployment` 先在目标目录的同级临时目录完整复制负载，再原子移动到受管 `InstallRoot`；已存在的目标目录不覆盖，避免失败安装破坏已提交的客户端。
 - `Preflight` 只把平台、Node、npx 与产品数据父目录的错误作为阻断条件；端口冲突和 WebView 缺失以可理解的预警显示，DSH 端口由 Supervisor 在后续阶段迁移。
 - 事务完成顺序固定为：前置检测、部署客户端、启动并验证 DSH Web UI、注册当前用户自启动、注册平台卸载入口、保存 `InstallManifest`、提交。未到 `Committed` 的资源必须按相反顺序补偿。
+- 用户主动停止和外部边界产生的意外取消必须分别记录，但两者都必须进入 `Stopping -> RollingBack -> Failed` 并保留原生失败页；不得让 `OperationCanceledException` 从安装窗口的异步事件处理器逸出导致进程退出。
 - 回滚只接受本次部署记录和内存中的、已通过 `AppPaths` 校验的 `InstallManifest`。它先停止 Supervisor，再注销自启动与卸载入口，随后删除清单内目录和本次部署目录；不根据名称、PATH 或工作区内容扩展删除范围。
 - 回滚时保留安装日志供失败页查看；安装器退出后才删除该失败日志。失败日志本身不是可运行安装的一部分。
+- 启动新事务前，安装窗口检测现有产品状态并要求用户选择处理方式。有效安装清单证明其记录路径可安全处理；无清单但位于 `AppPaths` 精确受管路径内的数据视为中断残留。覆盖安装只允许 `IClientDeployment` 以同级备份目录原子替换 `InstallRoot`，并在失败回滚时恢复原目录；`DSH_HOME`、私有 npm cache、WebView 与日志均不得清理。全新安装仅在用户明确选择后，才可基于当前 `AppPaths` 生成仅用于清理的临时 `InstallManifest`，清理精确记录的路径后部署；安装器当前正在写入的日志始终保留到退出。无法验证的安装清单不得覆盖，只允许显式全新安装。
+- 安装界面通过只读位置服务打开已存在的 `InstallRoot`，或在部署前打开最近的现有父目录；该操作不得创建目录或改变事务状态。
 
 ## 5. DSH 运行环境
 
@@ -131,9 +134,10 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - `DshSupervisor` 是唯一允许创建和停止 DSH 进程的共享服务。调用方通过 `DshSupervisorOptions` 提供超时、重试和可替换的进程/HTTP 边界；生产默认值固定为未锁版本的 npx 命令。
 - 启动前以受限时的 `node --version` 与 `npx --version` 验证可执行文件。解析顺序遵循当前进程 `PATH`，Windows 同时支持 `.exe`、`.cmd` 和 `.bat`；不调用 npm 安装、不改写系统环境。
 - Supervisor 创建 `npm_config_cache`、`DSH_HOME` 和 `launcher-cwd` 后，以 `npx --yes @deepseek-ai/dsh web --host 127.0.0.1 --port <port>` 启动。子进程只继承必要环境，并固定工作目录为 `launcher-cwd`。
+- 默认 DSH 就绪等待覆盖首次 npx 供应所需的依赖下载，时长为十分钟且可由安装器的停止操作取消；就绪等待、超时和停止结果均写入运行日志。
 - 端口选择依次尝试已持久化端口、3080 和临时保留的 loopback 端口。启动期间若端口被抢占或进程提前退出，释放候选并换端口重试；从不接管或终止未知监听者。
 - 健康检查同时验证 HTTP 成功、响应中的 DSH 页面特征以及所记录子进程仍存活。成功后持久化端口、PID、进程启动时间和实例标识；持久化状态仅用于诊断和下次优先选端口，不能构成对既有进程的所有权声明。
-- Windows 的受管进程加入专属 Job Object；macOS 的受管进程加入独立 process group。停止先向该受管集合请求优雅退出，超时后仅终止同一集合。绑定失败立即停止刚创建的子进程并报告启动失败。
+- Windows 的受管进程加入专属 Job Object；macOS 的受管进程加入独立 process group。Windows 不向可能与调试宿主共享的控制台广播 Ctrl+Break；停止先使用安全的进程级优雅请求，超时后仅终止同一 Job Object/process group。绑定失败立即停止刚创建的子进程并报告启动失败。
 - 进程异常退出触发一次状态通知和运行日志。`StartWithRecoveryAsync` 最多执行一次普通启动重试；只有调用方明确确认私有 npm cache 损坏时才删除该 cache，并允许一次额外启动，不删除 `DSH_HOME`。
 
 ## 6. 桌面应用结构
@@ -157,7 +161,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 ### 6.2 窗口和 WebView
 
 - 使用操作系统标准窗口装饰和原生标题栏。
-- 安装、启动、停止和故障状态由 Avalonia 原生视图呈现。
+- 安装、启动、停止和故障状态由 Avalonia 原生视图呈现；Windows 安装引导的可见文本使用简体中文。
 - `NativeWebView` 直接浏览 DSH Web UI，不实现导航白名单、外部链接拦截或宿主脚本桥接。
 - Windows 在 WebView 环境创建前设置私有 `UserDataFolder`。
 - macOS 使用固定 `DataStoreIdentifier` 隔离 WKWebView 持久数据；卸载通过平台清理能力删除。
@@ -169,6 +173,14 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 托盘命令最少包含“打开 DSH”和“退出”；macOS 遵循菜单栏原生点击行为。
 - 第二实例通过本机 IPC 通知第一实例显示窗口，然后退出。
 - 自启动使用 `--background` 参数；后台启动时创建托盘并启动 DSH，不显示主窗口。
+
+### 6.4 运行时协调与资源销毁顺序
+
+- `ApplicationCoordinator` 是已安装客户端的唯一运行时编排者：它驱动 `Starting -> Ready -> Stopping -> Stopped` 状态，并订阅 `DshSupervisor` 故障通知；DSH 异常退出只切换为原生故障视图，不自动无限重启。
+- 主窗口仅在 Coordinator 已收到健康检查成功的 loopback URI 后创建 `NativeWebView` 并导航。启动、停止和故障阶段只显示 Avalonia 原生视图；不订阅或改写网页导航、外部链接、脚本消息和资源请求。
+- `NativeWebView.EnvironmentRequested` 是唯一的浏览器环境配置点：Windows 创建并使用 `AppPaths.WebViewDataDirectory` 作为 WebView2 用户数据目录；macOS 设置固定的产品 `DataStoreIdentifier`。该目录或数据存储的删除仍只由安装清单清理流程执行。
+- 托盘图标由应用级 Avalonia `TrayIcon` 创建。Windows 图标点击和两个平台的原生菜单都可显示主窗口；“退出”先销毁 WebView，再停止 Coordinator 所拥有的 DSH，最后显式关闭 Avalonia 生命周期。
+- 安装窗口在事务未结束时拦截窗口关闭，显示原生停止与回滚确认；提交成功后切换到同一进程内的主窗口，复用已验证的 Supervisor，不重复创建 DSH。
 
 ## 7. 平台发行
 

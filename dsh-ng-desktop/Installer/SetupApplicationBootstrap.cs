@@ -10,7 +10,7 @@ namespace DshNgDesktop.Installer;
 /// Keeps process argument parsing at the host edge and builds the explicit
 /// setup dependency graph without a reflection-based service container.
 /// </summary>
-internal sealed record SetupApplicationBootstrap(AppPaths Paths, string? PayloadDirectory, bool ForceSetup)
+internal sealed record SetupApplicationBootstrap(AppPaths Paths, string? PayloadDirectory, bool ForceSetup, bool Background)
 {
     private static SetupApplicationBootstrap? _current;
 
@@ -38,18 +38,35 @@ internal sealed record SetupApplicationBootstrap(AppPaths Paths, string? Payload
             log,
             new ProductDataCleaner(Paths),
             SetupCoordinatorOptions.CreateDefault(Paths, PayloadDirectory));
-        return new SetupRuntime(log, supervisor, coordinator);
+        return new SetupRuntime(Paths, log, supervisor, coordinator);
+    }
+
+    public DesktopRuntime CreateDesktopRuntime(ApplicationStateMachine stateMachine, SetupRuntime? setupRuntime = null)
+    {
+        ArgumentNullException.ThrowIfNull(stateMachine);
+        if (setupRuntime is not null)
+        {
+            return new DesktopRuntime(Paths, stateMachine, setupRuntime.Supervisor, setupRuntime.Log, ownsSupervisor: false, ownsLog: false);
+        }
+
+        var platformServices = PlatformServices.CreateDefault();
+        var log = new AppLog(Paths);
+        var supervisor = new DshSupervisor(Paths, platformServices, log);
+        return new DesktopRuntime(Paths, stateMachine, supervisor, log, ownsSupervisor: true, ownsLog: true);
     }
 }
 
 public sealed class SetupRuntime : IAsyncDisposable
 {
-    public SetupRuntime(AppLog log, DshSupervisor supervisor, SetupCoordinator coordinator)
+    public SetupRuntime(AppPaths paths, AppLog log, DshSupervisor supervisor, SetupCoordinator coordinator)
     {
+        Paths = paths;
         Log = log;
         Supervisor = supervisor;
         Coordinator = coordinator;
     }
+
+    public AppPaths Paths { get; }
 
     public AppLog Log { get; }
 

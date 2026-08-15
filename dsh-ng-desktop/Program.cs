@@ -41,7 +41,8 @@ internal static class Program
         SetupApplicationBootstrap.Configure(new SetupApplicationBootstrap(
             paths,
             payloadDirectory,
-            args.Any(argument => string.Equals(argument, "--install", StringComparison.OrdinalIgnoreCase))));
+            args.Any(argument => string.Equals(argument, "--install", StringComparison.OrdinalIgnoreCase)),
+            args.Any(argument => string.Equals(argument, "--background", StringComparison.OrdinalIgnoreCase))));
         var instance = new SingleInstanceCoordinator(paths.ProductId);
         if (!instance.TryAcquirePrimary())
         {
@@ -78,6 +79,12 @@ internal static class Program
 
     private static void ActivateMainWindow()
     {
+        if (Application.Current is App app)
+        {
+            app.ShowMainWindow();
+            return;
+        }
+
         if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop || desktop.MainWindow is not { } window)
         {
             return;

@@ -1,6 +1,8 @@
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using DshNgDesktop.Core;
 using DshNgDesktop.Installer;
 using DshNgDesktop.Views;
@@ -12,25 +14,213 @@ internal sealed class App : Application
     public ApplicationStateMachine StateMachine { get; } = new();
 
     private SetupRuntime? _setupRuntime;
+    private DesktopRuntime? _desktopRuntime;
+    private MainWindow? _mainWindow;
+    private bool _shutdownRequested;
 
-    public override void Initialize() => AvaloniaXamlLoader.Load(this);
+    public override void Initialize()
+    {
+        AvaloniaXamlLoader.Load(this);
+        ConfigureTrayIcon();
+    }
 
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            desktop.Exit += Desktop_OnExit;
+
             var bootstrap = SetupApplicationBootstrap.Current;
             if (!bootstrap.ForceSetup && SetupLocations.IsCurrentProcessInstalled(bootstrap.Paths))
             {
-                desktop.MainWindow = new MainWindow();
+                StartDesktopHost(desktop, bootstrap, setupRuntime: null, bootstrap.Background);
             }
             else
             {
                 _setupRuntime = bootstrap.CreateRuntime(StateMachine);
-                desktop.MainWindow = new SetupWindow(_setupRuntime);
+                var setupWindow = new SetupWindow(_setupRuntime);
+                setupWindow.InstallationCommitted += (_, _) => StartDesktopHost(desktop, bootstrap, _setupRuntime, background: false);
+                setupWindow.Closed += (_, _) =>
+                {
+                    if (_desktopRuntime is null)
+                    {
+                        desktop.Shutdown();
+                    }
+                };
+                desktop.MainWindow = setupWindow;
             }
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    internal void ShowMainWindow()
+    {
+        if (_mainWindow is null || ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            return;
+        }
+
+        if (desktop.MainWindow is null)
+        {
+            desktop.MainWindow = _mainWindow;
+        }
+
+        _mainWindow.ShowAndActivate();
+    }
+
+    private void StartDesktopHost(
+        IClassicDesktopStyleApplicationLifetime desktop,
+        SetupApplicationBootstrap bootstrap,
+        SetupRuntime? setupRuntime,
+        bool background)
+    {
+        if (_desktopRuntime is not null)
+        {
+            return;
+        }
+
+        var setupWindow = desktop.MainWindow as SetupWindow;
+        _desktopRuntime = bootstrap.CreateDesktopRuntime(StateMachine, setupRuntime);
+        _mainWindow = new MainWindow(_desktopRuntime);
+        SetTrayVisibility(true);
+
+        if (!background)
+        {
+            desktop.MainWindow = _mainWindow;
+        }
+
+        if (setupWindow is not null)
+        {
+            setupWindow.Close();
+        }
+
+        _ = StartDesktopRuntimeAsync(background);
+    }
+
+    private async Task StartDesktopRuntimeAsync(bool background)
+    {
+        if (_desktopRuntime is null)
+        {
+            return;
+        }
+
+        await _desktopRuntime.Coordinator.StartAsync().ConfigureAwait(false);
+        if (!background)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_mainWindow is { IsVisible: false })
+                {
+                    _mainWindow.ShowAndActivate();
+                }
+            });
+            return;
+        }
+
+        // A background login launch deliberately keeps MainWindow unassigned
+        // until the user invokes the tray command or a second instance asks
+        // to activate it. The explicit desktop shutdown mode keeps this host
+        // and its tray icon alive without a visible window.
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (_mainWindow?.IsVisible == true)
+            {
+                _mainWindow.Hide();
+            }
+        });
+    }
+
+    private void DesktopTrayIcon_OnClicked(object? sender, EventArgs eventArgs) => ShowMainWindow();
+
+    private void OpenDshMenuItem_OnClick(object? sender, EventArgs eventArgs) => ShowMainWindow();
+
+    private async void ExitMenuItem_OnClick(object? sender, EventArgs eventArgs) => await RequestExitAsync().ConfigureAwait(true);
+
+    private async Task RequestExitAsync()
+    {
+        if (_shutdownRequested)
+        {
+            return;
+        }
+
+        _shutdownRequested = true;
+        _mainWindow?.DestroyWebViewForExit();
+        SetTrayVisibility(false);
+        if (_desktopRuntime is not null)
+        {
+            await _desktopRuntime.Coordinator.StopAsync().ConfigureAwait(true);
+        }
+
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            desktop.Shutdown();
+        }
+    }
+
+    private async void Desktop_OnExit(object? sender, ControlledApplicationLifetimeExitEventArgs eventArgs)
+    {
+        if (!_shutdownRequested)
+        {
+            _shutdownRequested = true;
+            _mainWindow?.DestroyWebViewForExit();
+            SetTrayVisibility(false);
+            if (_desktopRuntime is not null)
+            {
+                await _desktopRuntime.Coordinator.StopAsync().ConfigureAwait(true);
+            }
+        }
+
+        if (_desktopRuntime is not null)
+        {
+            await _desktopRuntime.DisposeAsync().ConfigureAwait(true);
+        }
+
+        if (_setupRuntime is not null)
+        {
+            await _setupRuntime.DisposeAsync().ConfigureAwait(true);
+        }
+    }
+
+    private void SetTrayVisibility(bool visible)
+    {
+        var icons = TrayIcon.GetIcons(this);
+        if (icons is null)
+        {
+            return;
+        }
+
+        foreach (var icon in icons)
+        {
+            icon.IsVisible = visible;
+        }
+    }
+
+    private void ConfigureTrayIcon()
+    {
+        var icons = TrayIcon.GetIcons(this);
+        if (icons is null)
+        {
+            return;
+        }
+
+        foreach (var icon in icons)
+        {
+            icon.Clicked += DesktopTrayIcon_OnClicked;
+            var openDsh = new NativeMenuItem { Header = "打开 DSH" };
+            openDsh.Click += OpenDshMenuItem_OnClick;
+            var exit = new NativeMenuItem { Header = "退出" };
+            exit.Click += ExitMenuItem_OnClick;
+            icon.Menu = new NativeMenu
+            {
+                Items =
+                {
+                    openDsh,
+                    new NativeMenuItemSeparator(),
+                    exit
+                }
+            };
+        }
     }
 }

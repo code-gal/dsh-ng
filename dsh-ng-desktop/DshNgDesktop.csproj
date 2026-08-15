@@ -32,6 +32,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
+    <AvaloniaResource Include="Assets\dsh.ico" />
   </ItemGroup>
 
   <ItemGroup>

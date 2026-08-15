@@ -564,29 +564,12 @@ internal static partial class WindowsConsoleControl
 
     public static bool TrySendCtrlBreak(int processId, out string error)
     {
-        if (!AttachConsole((uint)processId))
-        {
-            error = $"The owned DSH console could not be attached for graceful termination (Win32 error {Marshal.GetLastPInvokeError()}).";
-            return false;
-        }
-
-        try
-        {
-            SetConsoleCtrlHandler(0, true);
-            if (!GenerateConsoleCtrlEvent(CtrlBreakEvent, 0))
-            {
-                error = $"A Ctrl+Break signal could not be sent to the owned DSH console (Win32 error {Marshal.GetLastPInvokeError()}).";
-                return false;
-            }
-
-            error = string.Empty;
-            return true;
-        }
-        finally
-        {
-            SetConsoleCtrlHandler(0, false);
-            FreeConsole();
-        }
+        // npx is not created with CREATE_NEW_PROCESS_GROUP. Broadcasting a
+        // Ctrl+Break event with group id 0 may also reach the VS debug host,
+        // which appears as STATUS_CONTROL_C_EXIT. Fall back to the exact Job
+        // Object termination path instead of risking an unrelated process.
+        error = "Ctrl+Break was skipped because the DSH process does not have an isolated Windows console group.";
+        return false;
     }
 
     [LibraryImport("kernel32.dll", SetLastError = true)]

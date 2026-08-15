@@ -23,8 +23,13 @@ public sealed class SetupCoordinator : IAsyncDisposable
     private readonly ProductDataCleaner _dataCleaner;
     private readonly SetupCoordinatorOptions _options;
     private readonly CancellationTokenSource _stopSource = new();
+    private readonly List<Task> _pendingProgressLogs = [];
     private int _runStarted;
     private bool _disposed;
+    private ExistingDataHandling _existingDataHandling = ExistingDataHandling.RequireUserChoice;
+    private bool _replaceExistingInstallRoot;
+    private bool _preserveExistingDataOnRollback;
+    private bool _retainExistingRegistrations;
     private bool _startupRegistrationAttempted;
     private bool _installationRegistrationAttempted;
     private InstallManifest? _manifest;
@@ -59,6 +64,17 @@ public sealed class SetupCoordinator : IAsyncDisposable
 
     public SetupResult? Result => _result;
 
+    public void SelectExistingDataHandling(ExistingDataHandling handling)
+    {
+        ThrowIfDisposed();
+        if (Volatile.Read(ref _runStarted) != 0)
+        {
+            throw new InvalidOperationException("必须在安装开始前选择旧数据的处理方式。");
+        }
+
+        _existingDataHandling = handling;
+    }
+
     public void RequestStop() => _stopSource.Cancel();
 
     public async Task<SetupResult> RunAsync(CancellationToken cancellationToken = default)
@@ -66,16 +82,17 @@ public sealed class SetupCoordinator : IAsyncDisposable
         ThrowIfDisposed();
         if (Interlocked.Exchange(ref _runStarted, 1) != 0)
         {
-            throw new InvalidOperationException("The installation transaction can only run once.");
+            throw new InvalidOperationException("安装事务只能运行一次。");
         }
 
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopSource.Token);
         var transactionToken = linkedCancellation.Token;
         try
         {
-            Transition(ApplicationState.Preflight, SetupStage.Preflight, "Checking this computer", "Checking Node.js, npx, storage and desktop prerequisites.");
+            Transition(ApplicationState.Preflight, SetupStage.Preflight, "正在检查此计算机", "正在检查 Node.js、npx、存储空间和桌面组件前置条件。");
             var preflight = await _doctor.RunInstallerPreflightAsync(transactionToken).ConfigureAwait(false);
             await LogPreflightAsync(preflight, transactionToken).ConfigureAwait(false);
+            await FlushProgressLogsAsync().ConfigureAwait(false);
             var blockingChecks = preflight.Checks.Where(check => check.Severity == DiagnosticSeverity.Error).ToList();
             if (blockingChecks.Count > 0)
             {
@@ -86,21 +103,21 @@ public sealed class SetupCoordinator : IAsyncDisposable
                     wasCancelled: false).ConfigureAwait(false);
             }
 
-            EnsureNoExistingProductData();
+            await PrepareExistingProductDataAsync(transactionToken).ConfigureAwait(false);
 
-            Transition(ApplicationState.DeployingClient, SetupStage.DeployingClient, "Installing DSH Desktop", "Copying the client into its current-user installation directory.");
+            Transition(ApplicationState.DeployingClient, SetupStage.DeployingClient, "正在安装 DSH Desktop", "正在将客户端复制到当前用户的安装目录。");
             _deploymentResult = await _deployment.DeployAsync(
-                new ClientDeploymentRequest(_options.PayloadDirectory, _paths.InstallRoot),
+                new ClientDeploymentRequest(_options.PayloadDirectory, _paths.InstallRoot, _replaceExistingInstallRoot),
                 transactionToken).ConfigureAwait(false);
             _manifest = InstallManifest.Create(_paths);
-            await _log.InformationAsync(AppLogStream.Installation, "setup-client-deployed", "The client payload was copied to the transaction-owned installation directory.", transactionToken)
+            await _log.InformationAsync(AppLogStream.Installation, "setup-client-deployed", "客户端负载已复制到本次事务拥有的安装目录。", transactionToken)
                 .ConfigureAwait(false);
 
-            Transition(ApplicationState.ProvisioningDsh, SetupStage.ProvisioningDsh, "Preparing DeepSeek Harness", "Starting npx with the product-private cache and DSH home.");
+            Transition(ApplicationState.ProvisioningDsh, SetupStage.ProvisioningDsh, "正在准备 DeepSeek Harness", "正在使用产品私有缓存和 DSH 主目录启动 npx。");
             // DshSupervisor validates both the npx launch and the Web UI. The
             // state changes before this call make the native progress view show
             // the two meaningful user-facing phases without faking download %.
-            Transition(ApplicationState.WaitingForWebUi, SetupStage.WaitingForWebUi, "Waiting for the local Web UI", "Verifying the DSH page identity on its private loopback address.");
+            Transition(ApplicationState.WaitingForWebUi, SetupStage.WaitingForWebUi, "正在等待本地 Web 界面", "正在下载并验证 DSH 页面；首次供应依赖可能需要数分钟，可随时停止安装。");
             var started = await _dshSupervisor.StartAsync(transactionToken).ConfigureAwait(false);
             if (!started.Succeeded)
             {
@@ -108,32 +125,44 @@ public sealed class SetupCoordinator : IAsyncDisposable
                     .ConfigureAwait(false);
             }
 
-            Transition(ApplicationState.Registering, SetupStage.Registering, "Registering DSH Desktop", "Registering current-user login startup and the platform uninstall entry.");
-            _startupRegistrationAttempted = true;
-            var startup = await _platformServices.RegisterStartupAsync(
-                new StartupRegistration(_paths.ProductId, _options.InstalledExecutablePath, ["--background"]),
-                transactionToken).ConfigureAwait(false);
-            EnsureSucceeded(startup, "The current-user startup entry could not be registered.");
+            Transition(ApplicationState.Registering, SetupStage.Registering, "正在注册 DSH Desktop", "正在注册当前用户开机启动和系统卸载入口。");
+            if (!_retainExistingRegistrations)
+            {
+                _startupRegistrationAttempted = true;
+                var startup = await _platformServices.RegisterStartupAsync(
+                    new StartupRegistration(_paths.ProductId, _options.InstalledExecutablePath, ["--background"]),
+                    transactionToken).ConfigureAwait(false);
+                EnsureSucceeded(startup, "无法注册当前用户开机启动项。");
 
-            _installationRegistrationAttempted = true;
-            var installation = await _platformServices.RegisterInstallationAsync(
-                new InstallationRegistration(_paths.ProductId, _options.DisplayName, _paths.InstallRoot, _options.UninstallCommand),
-                transactionToken).ConfigureAwait(false);
-            EnsureSucceeded(installation, "The platform uninstall entry could not be registered.");
+                _installationRegistrationAttempted = true;
+                var installation = await _platformServices.RegisterInstallationAsync(
+                    new InstallationRegistration(_paths.ProductId, _options.DisplayName, _paths.InstallRoot, _options.UninstallCommand),
+                    transactionToken).ConfigureAwait(false);
+                EnsureSucceeded(installation, "无法注册系统卸载入口。");
+            }
 
             await _manifest.SaveAsync(_paths, transactionToken).ConfigureAwait(false);
-            await _log.InformationAsync(AppLogStream.Installation, "setup-registered", "Startup, uninstall registration and the installation manifest were committed.", transactionToken)
+            await CompleteClientReplacementAsync(CancellationToken.None).ConfigureAwait(false);
+            await _log.InformationAsync(AppLogStream.Installation, "setup-registered", "已提交开机启动、卸载注册和安装清单。", transactionToken)
                 .ConfigureAwait(false);
-            Transition(ApplicationState.Committed, SetupStage.Committed, "Installation complete", "DSH Desktop is installed and the local DSH Web UI passed its health check.", isTerminal: true);
+            Transition(ApplicationState.Committed, SetupStage.Committed, "安装完成", "DSH Desktop 已安装完成，本地 DSH Web 界面健康检查已通过。", isTerminal: true);
+            await FlushProgressLogsAsync().ConfigureAwait(false);
             _result = SetupResult.Success();
             return _result;
         }
         catch (OperationCanceledException) when (_stopSource.IsCancellationRequested || cancellationToken.IsCancellationRequested)
         {
             return await FailAndRollbackAsync(
-                "Installation was stopped before it could be committed.",
-                "Review the installation log, resolve any reported prerequisite issue, then run the installer again.",
+                "安装在提交前已停止。",
+                "请查看安装日志，解决报告的前置条件问题后重新运行安装器。",
                 wasCancelled: true).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception)
+        {
+            return await FailAndRollbackAsync(
+                $"安装操作被意外取消：{exception.Message}",
+                "请查看安装和运行日志，确认网络与 DSH 前置条件后重新运行安装器。",
+                wasCancelled: false).ConfigureAwait(false);
         }
         catch (SetupOperationException exception)
         {
@@ -142,8 +171,8 @@ public sealed class SetupCoordinator : IAsyncDisposable
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return await FailAndRollbackAsync(
-                $"DSH Desktop could not finish installation: {exception.Message}",
-                "Open the installation log, correct the reported problem, then run the installer again.",
+                $"DSH Desktop 无法完成安装：{exception.Message}",
+                "请打开安装日志，处理报告的问题后重新运行安装器。",
                 wasCancelled: false).ConfigureAwait(false);
         }
     }
@@ -185,7 +214,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
     {
         var rollbackErrors = new List<string>();
         TryTransitionToStopping();
-        Publish(SetupStage.Stopping, "Stopping installation", "Stopping only the DSH process tree created by this transaction.");
+        Publish(SetupStage.Stopping, "正在停止安装", "仅停止本次事务创建的 DSH 进程树。");
 
         try
         {
@@ -193,14 +222,14 @@ public sealed class SetupCoordinator : IAsyncDisposable
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            rollbackErrors.Add($"DSH stop: {exception.Message}");
+            rollbackErrors.Add($"停止 DSH：{exception.Message}");
         }
 
         if (_startupRegistrationAttempted)
         {
             await CompensateAsync(
                 () => _platformServices.UnregisterStartupAsync(_paths.ProductId, CancellationToken.None),
-                "startup registration",
+                "开机启动项",
                 rollbackErrors).ConfigureAwait(false);
         }
 
@@ -208,16 +237,18 @@ public sealed class SetupCoordinator : IAsyncDisposable
         {
             await CompensateAsync(
                 () => _platformServices.UnregisterInstallationAsync(_paths.ProductId, CancellationToken.None),
-                "uninstall registration",
+                "系统卸载入口",
                 rollbackErrors).ConfigureAwait(false);
         }
 
         if (_stateMachine.Snapshot.State == ApplicationState.Stopping)
         {
-            Transition(ApplicationState.RollingBack, SetupStage.RollingBack, "Rolling back installation", "Removing only files and registrations created by this installation attempt.");
+            Transition(ApplicationState.RollingBack, SetupStage.RollingBack, "正在回滚安装", "仅移除本次安装创建的文件和注册项。");
         }
 
-        if (_manifest is not null)
+        await FlushProgressLogsAsync().ConfigureAwait(false);
+
+        if (_manifest is not null && !_preserveExistingDataOnRollback)
         {
             try
             {
@@ -225,7 +256,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
             {
-                rollbackErrors.Add($"product data cleanup: {exception.Message}");
+                rollbackErrors.Add($"产品数据清理：{exception.Message}");
             }
         }
 
@@ -237,22 +268,23 @@ public sealed class SetupCoordinator : IAsyncDisposable
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
-                rollbackErrors.Add($"client deployment cleanup: {exception.Message}");
+                rollbackErrors.Add($"客户端文件清理：{exception.Message}");
             }
         }
 
         if (_stateMachine.Snapshot.State == ApplicationState.RollingBack)
         {
-            Transition(ApplicationState.Failed, SetupStage.Failed, "Installation did not complete", summary, isTerminal: true);
+            Transition(ApplicationState.Failed, SetupStage.Failed, "安装未完成", summary, isTerminal: true);
         }
 
         if (rollbackErrors.Count > 0)
         {
-            summary = $"{summary} Rollback needs attention: {string.Join("; ", rollbackErrors)}";
-            remediation = "Review the retained installation log before retrying. Only the listed product paths may need manual cleanup.";
+            summary = $"{summary} 回滚仍需处理：{string.Join("；", rollbackErrors)}";
+            remediation = "重试前请查看保留的安装日志。可能仅需要手动处理所列出的产品路径。";
         }
 
         await _log.ErrorAsync(AppLogStream.Installation, "setup-failed", summary, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        await FlushProgressLogsAsync().ConfigureAwait(false);
         _result = SetupResult.Failure(summary, remediation, wasCancelled);
         return _result;
     }
@@ -261,32 +293,110 @@ public sealed class SetupCoordinator : IAsyncDisposable
     {
         if (!result.Succeeded)
         {
-            throw new SetupOperationException($"{prefix} {result.Error}", "Check your current-user permissions, then run the installer again.");
+            throw new SetupOperationException($"{prefix} {result.Error}", "请检查当前用户权限后重新运行安装器。");
         }
     }
 
-    private void EnsureNoExistingProductData()
+    private async Task PrepareExistingProductDataAsync(CancellationToken cancellationToken)
     {
-        if (File.Exists(_paths.InstallManifestPath))
+        var state = SetupLocations.InspectExistingProductData(_paths);
+        if (state == ExistingProductDataState.None)
         {
-            throw new SetupOperationException(
-                "DSH Desktop is already installed or its previous installation state has not been removed.",
-                "Use the system uninstall entry before installing again; the installer will not overwrite an existing product state.");
+            return;
         }
 
-        var existingManagedData = new[]
-        {
-            _paths.StateDirectory,
-            _paths.NpmCacheDirectory,
-            _paths.DshHomeDirectory,
-            _paths.LauncherWorkingDirectory,
-            _paths.WebViewDataDirectory
-        }.FirstOrDefault(Directory.Exists);
-        if (existingManagedData is not null)
+        if (_existingDataHandling == ExistingDataHandling.RequireUserChoice)
         {
             throw new SetupOperationException(
-                "Existing DSH Desktop product data was found, so this installation cannot safely overwrite it.",
-                "Use the system uninstall entry or inspect the retained installation log before retrying.");
+                "检测到已有 DSH Desktop 数据，请先选择覆盖安装或全新安装。",
+                "覆盖安装会保留 DSH 数据；全新安装会删除全部产品数据后重新安装。");
+        }
+
+        if (state == ExistingProductDataState.UnverifiedManifest &&
+            _existingDataHandling != ExistingDataHandling.FreshInstall)
+        {
+            throw new SetupOperationException(
+                "现有安装清单无法验证，不能安全地覆盖安装。",
+                "请选择全新安装，或打开安装位置和日志后手动检查。");
+        }
+
+        if (_existingDataHandling == ExistingDataHandling.ReplaceClientPreservingData)
+        {
+            if (File.Exists(_paths.InstallRoot))
+            {
+                throw new SetupOperationException(
+                    "安装目标路径被同名文件占用，无法安全覆盖。",
+                    "打开安装位置，移走该同名文件后重试。");
+            }
+
+            _replaceExistingInstallRoot = Directory.Exists(_paths.InstallRoot);
+            _preserveExistingDataOnRollback = true;
+            _retainExistingRegistrations = state == ExistingProductDataState.VerifiedInstallation;
+            await _log.InformationAsync(
+                    AppLogStream.Installation,
+                    "setup-preserve-existing-data",
+                    "用户选择覆盖安装：将替换客户端文件并保留 DSH 配置、会话、插件、缓存和日志。",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            var startupRemoval = await _platformServices.UnregisterStartupAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
+            EnsureRecoveryRemovalSucceeded(startupRemoval, "开机启动项");
+            var installationRemoval = await _platformServices.UnregisterInstallationAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
+            EnsureRecoveryRemovalSucceeded(installationRemoval, "系统卸载入口");
+            await _dataCleaner.CleanAsync(
+                    InstallManifest.Create(_paths),
+                    preserveInstallationLogs: true,
+                    includeInstallRoot: true,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or System.Security.SecurityException)
+        {
+            throw new SetupOperationException(
+                $"无法安全清理旧的 DSH Desktop 产品数据：{exception.Message}",
+                "请打开安装位置和日志，处理所列产品路径后重试。");
+        }
+
+        await _log.WarningAsync(
+                AppLogStream.Installation,
+                "setup-fresh-installation-selected",
+                "用户选择全新安装：已清理旧的产品受管路径。",
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task CompleteClientReplacementAsync(CancellationToken cancellationToken)
+    {
+        if (_deploymentResult is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _deployment.CommitAsync(_deploymentResult, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            await _log.WarningAsync(
+                    AppLogStream.Installation,
+                    "setup-replacement-backup-retained",
+                    $"新客户端已提交，但旧客户端备份尚未删除：{exception.Message}",
+                    exception,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static void EnsureRecoveryRemovalSucceeded(PlatformOperationResult result, string resource)
+    {
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException($"无法删除旧的 {resource}：{result.Error}");
         }
     }
 
@@ -314,7 +424,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
         var current = _stateMachine.Snapshot.State;
         if (current is ApplicationState.Preflight or ApplicationState.DeployingClient or ApplicationState.ProvisioningDsh or ApplicationState.WaitingForWebUi or ApplicationState.Registering)
         {
-            Transition(ApplicationState.Stopping, SetupStage.Stopping, "Stopping installation", "Cancelling the uncommitted installation transaction.");
+            Transition(ApplicationState.Stopping, SetupStage.Stopping, "正在停止安装", "正在取消尚未提交的安装事务。");
         }
     }
 
@@ -322,7 +432,19 @@ public sealed class SetupCoordinator : IAsyncDisposable
     {
         _stateMachine.TransitionTo(state, detail);
         Publish(stage, title, detail, isTerminal);
-        _ = _log.InformationAsync(AppLogStream.Installation, $"setup-{stage.ToString().ToLowerInvariant()}", detail);
+        _pendingProgressLogs.Add(_log.InformationAsync(AppLogStream.Installation, $"setup-{stage.ToString().ToLowerInvariant()}", detail));
+    }
+
+    private async Task FlushProgressLogsAsync()
+    {
+        if (_pendingProgressLogs.Count == 0)
+        {
+            return;
+        }
+
+        var pending = _pendingProgressLogs.ToArray();
+        _pendingProgressLogs.Clear();
+        await Task.WhenAll(pending).ConfigureAwait(false);
     }
 
     private void Publish(SetupStage stage, string title, string detail, bool isTerminal = false) =>
@@ -330,15 +452,14 @@ public sealed class SetupCoordinator : IAsyncDisposable
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (!_disposed)
         {
             _disposed = true;
+            await FlushProgressLogsAsync().ConfigureAwait(false);
             _stopSource.Dispose();
         }
-
-        return ValueTask.CompletedTask;
     }
 
     private sealed class SetupOperationException(string message, string remediation) : Exception(message)

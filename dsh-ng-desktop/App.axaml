@@ -1,6 +1,13 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="DshNgDesktop.App">
+	<TrayIcon.Icons>
+		<TrayIcons>
+			<TrayIcon Icon="/Assets/dsh.ico"
+					  IsVisible="False"
+					  ToolTipText="DSH Desktop" />
+		</TrayIcons>
+	</TrayIcon.Icons>
 	<Application.Styles>
 		<FluentTheme />
 	</Application.Styles>

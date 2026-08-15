@@ -7,16 +7,38 @@
         MinWidth="720"
         MinHeight="480"
         WindowStartupLocation="CenterScreen">
-  <StackPanel Margin="40"
-              Spacing="12"
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center">
-    <TextBlock Text="DSH Desktop"
-               FontSize="28"
-               FontWeight="SemiBold"
-               HorizontalAlignment="Center" />
-    <TextBlock Text="DSH Desktop 已完成安装。运行窗口、WebView 与托盘体验将在后续里程碑中启用。"
-               Opacity="0.7"
-               TextAlignment="Center" />
-  </StackPanel>
+  <Grid>
+    <StackPanel x:Name="NativeStatusPanel"
+                Margin="40"
+                Spacing="12"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                MaxWidth="560">
+      <TextBlock Text="DSH Desktop"
+                 FontSize="28"
+                 FontWeight="SemiBold"
+                 HorizontalAlignment="Center" />
+      <TextBlock x:Name="RuntimeStatusText"
+                 FontSize="18"
+                 FontWeight="SemiBold"
+                 TextAlignment="Center"
+                 Text="Preparing the local DSH runtime" />
+      <TextBlock x:Name="RuntimeDetailText"
+                 Opacity="0.72"
+                 TextWrapping="Wrap"
+                 TextAlignment="Center"
+                 Text="Starting DSH Desktop." />
+      <StackPanel x:Name="RuntimeActions"
+                  Orientation="Horizontal"
+                  Spacing="10"
+                  HorizontalAlignment="Center"
+                  IsVisible="False">
+        <Button x:Name="RetryButton" Click="RetryButton_OnClick">Retry</Button>
+        <Button x:Name="OpenLogsButton" Click="OpenLogsButton_OnClick">Open log folder</Button>
+        <Button x:Name="CopyDiagnosticsButton" Click="CopyDiagnosticsButton_OnClick">Copy diagnostics</Button>
+      </StackPanel>
+    </StackPanel>
+
+    <Border x:Name="WebViewHost" IsVisible="False" />
+  </Grid>
 </Window>

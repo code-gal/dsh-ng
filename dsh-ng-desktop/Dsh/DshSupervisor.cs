@@ -58,7 +58,7 @@ public sealed record DshSupervisorOptions(
 {
     public static DshSupervisorOptions Default { get; } = new(
         TimeSpan.FromSeconds(10),
-        TimeSpan.FromSeconds(45),
+        TimeSpan.FromMinutes(10),
         TimeSpan.FromSeconds(2),
         TimeSpan.FromMilliseconds(500),
         TimeSpan.FromSeconds(10),
@@ -427,9 +427,21 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                     "Inspect the runtime log, then verify Node.js and the local network policy.");
             }
 
+            await _log.InformationAsync(
+                    AppLogStream.Runtime,
+                    "dsh-health-wait",
+                    $"Waiting up to {_options.StartupTimeout.TotalMinutes:0} minutes for the DSH Web UI at http://127.0.0.1:{port}/.",
+                    cancellationToken)
+                .ConfigureAwait(false);
             var ready = await WaitForHealthyWebUiAsync(process, port, cancellationToken).ConfigureAwait(false);
             if (!ready.IsHealthy)
             {
+                await _log.WarningAsync(
+                        AppLogStream.Runtime,
+                        "dsh-health-wait-failed",
+                        $"DSH did not become healthy on port {port}: {ready.Detail}",
+                        cancellationToken: CancellationToken.None)
+                    .ConfigureAwait(false);
                 await StopOwnedProcessAsync(process, processGroup, CancellationToken.None).ConfigureAwait(false);
                 await processGroup.DisposeAsync().ConfigureAwait(false);
                 await process.DisposeAsync().ConfigureAwait(false);
@@ -501,7 +513,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
     {
         var deadline = DateTimeOffset.UtcNow + _options.StartupTimeout;
         var endpoint = new Uri($"http://127.0.0.1:{port}/", UriKind.Absolute);
-        var lastFailure = "DSH Web UI did not respond before startup timed out.";
+        var lastFailure = "等待 DSH Web 界面启动超时。";
 
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -528,7 +540,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             }
             catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                lastFailure = "DSH Web UI did not respond to its health check in time.";
+                lastFailure = "DSH Web 界面未能在健康检查时限内响应。";
             }
 
             await Task.Delay(_options.HealthPollInterval, cancellationToken).ConfigureAwait(false);
@@ -790,9 +802,9 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
 
     public async Task<DshExecutableValidationResult> ValidateAsync(CancellationToken cancellationToken = default)
     {
-        var node = await ValidateCommandAsync("node", "Install a supported system Node.js release and make node available on PATH.", cancellationToken)
+        var node = await ValidateCommandAsync("node", "请安装受支持的系统 Node.js，并将 node 加入 PATH。", cancellationToken)
             .ConfigureAwait(false);
-        var npx = await ValidateCommandAsync("npx", "Install the npm distribution that supplies npx and make it available on PATH.", cancellationToken)
+        var npx = await ValidateCommandAsync("npx", "请安装提供 npx 的 npm 发行版，并将 npx 加入 PATH。", cancellationToken)
             .ConfigureAwait(false);
         return new DshExecutableValidationResult(node, npx);
     }
@@ -802,7 +814,7 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
         var executable = FindExecutable(command);
         if (executable is null)
         {
-            return new DshCommandProbeResult(command, null, null, $"{command} was not found on PATH.", remediation);
+            return new DshCommandProbeResult(command, null, null, $"在 PATH 中找不到 {command}。", remediation);
         }
 
         try
@@ -821,7 +833,7 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
             process.StartInfo.ArgumentList.Add("--version");
             if (!process.Start())
             {
-                return new DshCommandProbeResult(command, executable, null, $"{command} could not be started.", remediation);
+                return new DshCommandProbeResult(command, executable, null, $"无法启动 {command}。", remediation);
             }
 
             var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
@@ -833,7 +845,7 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
             var error = (await errorTask.ConfigureAwait(false)).Trim();
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
             {
-                var detail = string.IsNullOrWhiteSpace(error) ? $"{command} --version exited with code {process.ExitCode}." : error;
+                var detail = string.IsNullOrWhiteSpace(error) ? $"{command} --version 以退出代码 {process.ExitCode} 结束。" : error;
                 return new DshCommandProbeResult(command, executable, null, detail, remediation);
             }
 
@@ -841,11 +853,11 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new DshCommandProbeResult(command, executable, null, $"{command} --version timed out.", remediation);
+            return new DshCommandProbeResult(command, executable, null, $"{command} --version 执行超时。", remediation);
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
-            return new DshCommandProbeResult(command, executable, null, $"{command} could not be executed: {exception.Message}", remediation);
+            return new DshCommandProbeResult(command, executable, null, $"无法执行 {command}：{exception.Message}", remediation);
         }
     }
 

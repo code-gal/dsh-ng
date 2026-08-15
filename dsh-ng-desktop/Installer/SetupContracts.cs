@@ -30,7 +30,7 @@ public sealed record SetupResult(
     public static SetupResult Success() => new(
         true,
         false,
-        "DSH Desktop is installed and its local Web UI is ready.",
+        "DSH Desktop 已安装完成，本地 Web 界面已就绪。",
         null);
 
     public static SetupResult Failure(string summary, string? remediation, bool wasCancelled = false) => new(
@@ -42,18 +42,41 @@ public sealed record SetupResult(
 
 /// <summary>
 /// The installer always copies a package payload into a different, product-owned
-/// target directory. A deployment implementation must never overwrite an
-/// existing installation while a transaction is still uncommitted.
+/// target directory. Replacing an existing target is permitted only after the
+/// user explicitly selects the data-preserving repair path.
 /// </summary>
-public sealed record ClientDeploymentRequest(string PayloadDirectory, string InstallRoot);
+public sealed record ClientDeploymentRequest(
+    string PayloadDirectory,
+    string InstallRoot,
+    bool ReplaceExistingInstallRoot = false);
 
-public sealed record ClientDeploymentResult(string InstallRoot, bool CreatedInstallRoot);
+public sealed record ClientDeploymentResult(
+    string InstallRoot,
+    bool CreatedInstallRoot,
+    string? ReplacedInstallRootBackup = null);
 
 public interface IClientDeployment
 {
     Task<ClientDeploymentResult> DeployAsync(ClientDeploymentRequest request, CancellationToken cancellationToken = default);
 
     Task RollbackAsync(ClientDeploymentResult deployment, CancellationToken cancellationToken = default);
+
+    Task CommitAsync(ClientDeploymentResult deployment, CancellationToken cancellationToken = default);
+}
+
+public enum ExistingProductDataState
+{
+    None,
+    VerifiedInstallation,
+    InterruptedInstallation,
+    UnverifiedManifest
+}
+
+public enum ExistingDataHandling
+{
+    RequireUserChoice,
+    ReplaceClientPreservingData,
+    FreshInstall
 }
 
 public sealed record SetupCoordinatorOptions(
