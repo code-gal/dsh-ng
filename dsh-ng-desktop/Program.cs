@@ -4,12 +4,19 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Avalonia;
+using Avalonia.Threading;
+using DshNgDesktop.Views;
 using Microsoft.Win32;
 
 namespace DshNgDesktop;
 
 internal static partial class Program
 {
+	// 供安装向导窗口使用的 Avalonia 应用入口，不启动经典桌面生命周期。
+	public static AppBuilder BuildAvaloniaApp() =>
+		AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace();
+
 	private static async Task Main()
 	{
 		if (!OperatingSystem.IsWindows())
@@ -114,6 +121,8 @@ internal static partial class Program
 		private static int _uiThreadId;
 		private static bool _busy;
 		private static bool _updateAvailable;
+		private static Thread? _avaloniaThread;
+		private static InstallWizardWindow? _wizardWindow;
 		private readonly nint _instance;
 		private readonly SafeWindowHandle _window;
 		private nint _icon;
@@ -340,7 +349,7 @@ internal static partial class Program
 				switch ((uint)wParam & 0xFFFF)
 				{
 					case _commandInstall:
-						_ = PromptAndInstallAsync(true);
+						ShowInstallWizard();
 						return nint.Zero;
 					case _commandMount:
 						_ = StartDshAsync(false);
@@ -376,8 +385,7 @@ internal static partial class Program
 			_current?.RefreshTrayIcon();
 			if (!_orchestrator.IsInstalled)
 			{
-				_current?.ShowBalloon("尚未安装 DSH", "首次使用需要先安装到本地私有目录。");
-				await PromptAndInstallAsync(true);
+				ShowInstallWizard();
 				return;
 			}
 
@@ -398,31 +406,51 @@ internal static partial class Program
 				return;
 			}
 
-			await PromptAndInstallAsync(true);
+			ShowInstallWizard();
 		}
 
-		private static async Task PromptAndInstallAsync(bool confirm)
+		// M4.2/M4.3: 首次未安装时改为展示 Avalonia 安装向导窗口，而非 TaskDialog 确认。
+		private static void ShowInstallWizard()
 		{
 			if (_orchestrator is null)
 			{
 				return;
 			}
 
-			if (_orchestrator.IsInstalled)
+			EnsureAvaloniaStarted();
+			var orchestrator = _orchestrator;
+			var port = _port;
+			Dispatcher.UIThread.Post(() =>
 			{
-				await ShowInformationAsync("DSH 已安装", "可从托盘菜单打开面板或检测更新。");
+				_wizardWindow ??= new InstallWizardWindow(orchestrator, port);
+				_wizardWindow.Show();
+				_wizardWindow.Activate();
+			});
+		}
+
+		// Avalonia 以 SetupWithoutStarting 在专用后台线程运行，与现有的 Win32 托盘消息循环并存而不互相干扰。
+		private static void EnsureAvaloniaStarted()
+		{
+			if (_avaloniaThread is not null)
+			{
 				return;
 			}
 
-			if (confirm && !await ConfirmAsync(
-				"安装 DSH",
-				"尚未安装 DSH。是否现在安装到本地私有目录？\n\n安装过程可能需要一两分钟，完成后即可打开面板。"))
+			using var ready = new ManualResetEventSlim();
+			var thread = new Thread(() =>
 			{
-				await ShowInformationAsync("已跳过安装", "需要时请从托盘菜单选择“安装 DSH”。");
-				return;
-			}
-
-			await InstallOrUpdateCoreAsync(false);
+				BuildAvaloniaApp().SetupWithoutStarting();
+				ready.Set();
+				Dispatcher.UIThread.MainLoop(CancellationToken.None);
+			})
+			{
+				IsBackground = true,
+				Name = "Avalonia UI"
+			};
+			thread.SetApartmentState(ApartmentState.STA);
+			thread.Start();
+			ready.Wait();
+			_avaloniaThread = thread;
 		}
 
 		private static async Task PromptAndUpdateAsync()
@@ -434,7 +462,7 @@ internal static partial class Program
 
 			if (!_orchestrator.IsInstalled)
 			{
-				await PromptAndInstallAsync(true);
+				ShowInstallWizard();
 				return;
 			}
 

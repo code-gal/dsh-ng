@@ -16,4 +16,4 @@ DeepSeek Harness (dsh) 是一个一切皆插件、鼓励高度折腾的开源智
 关于新想法、待验证功能的草案池见：[生态系统规划与点子库 (specs/IDEAS.md)](specs/IDEAS.md)。
 
 ## 工具与生态
-所有子项目相互独立但统一遵循根目录 `.copilot-instructions.md` 中指派的 AI 协同基律。
+所有子项目相互独立但统一遵循根目录 `AGENTS.md` 中指派的 AI 协同基律。

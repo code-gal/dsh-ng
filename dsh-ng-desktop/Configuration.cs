@@ -47,6 +47,10 @@ internal static class Configuration
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         ApplicationDirectoryName);
 
+    internal static string NodeModulesDirectory => Path.Combine(DataDirectory, "node_modules");
+
+    internal static string InstallationStagingDirectory => Path.Combine(DataDirectory, "installation-staging");
+
     private static string ConfigurationPath => Path.Combine(DataDirectory, ConfigurationFileName);
 
     private static AppConfiguration? Read()

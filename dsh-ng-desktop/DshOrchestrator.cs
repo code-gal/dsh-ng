@@ -17,6 +17,16 @@ internal sealed class DshOperationException(string message) : Exception(message)
 
 internal sealed record UpdateCheckResult(string? InstalledVersion, string? LatestVersion, bool UpdateAvailable);
 
+// 供安装向导窗口订阅，实时展示当前所处阶段。
+internal enum DshStage
+{
+    Idle,
+    Installing,
+    Starting,
+    Running,
+    Failed
+}
+
 internal sealed class DshOrchestrator : IDisposable
 {
     private const string _packageName = "@deepseek-ai/dsh";
@@ -24,18 +34,32 @@ internal sealed class DshOrchestrator : IDisposable
     private readonly SemaphoreSlim _operationLock = new(1, 1);
     private readonly Queue<string> _output = new();
     private Process? _dshProcess;
+    private Process? _installProcess;
     private bool _disposed;
+    private int _installCancellationRequested;
+    private bool _installationHadExistingPackage;
+    private DshStage _stage = DshStage.Idle;
 
     public DshOrchestrator(int port)
     {
         _port = port;
     }
 
+    public event Action<DshStage>? StageChanged;
+
+    public event Action<string>? LogAppended;
+
     public bool IsInstalled => File.Exists(PackageManifestPath);
 
     public bool IsRunning => _dshProcess is { HasExited: false };
 
+    public bool IsInstalling => _installProcess is { HasExited: false };
+
+    public bool WasInstallCanceled => Volatile.Read(ref _installCancellationRequested) != 0;
+
     public string? InstalledVersion => TryReadInstalledVersion();
+
+    public DshStage Stage => _stage;
 
     public static async Task InitializeEnvironmentAsync(CancellationToken cancellationToken = default)
     {
@@ -52,10 +76,22 @@ internal sealed class DshOrchestrator : IDisposable
         try
         {
             StopCore();
+            Volatile.Write(ref _installCancellationRequested, 0);
+            _installationHadExistingPackage = IsInstalled;
+            PrepareInstallationStaging();
+            SetStage(DshStage.Installing);
             await InstallAsync(cancellationToken);
+            CommitInstallationStaging();
+        }
+        catch
+        {
+            RollbackInstallationStaging();
+            SetStage(WasInstallCanceled ? DshStage.Idle : DshStage.Failed);
+            throw;
         }
         finally
         {
+            Interlocked.Exchange(ref _installProcess, null)?.Dispose();
             _operationLock.Release();
         }
     }
@@ -91,8 +127,15 @@ internal sealed class DshOrchestrator : IDisposable
 
             _dshProcess?.Dispose();
             _dshProcess = null;
+            SetStage(DshStage.Starting);
             StartDsh();
             await WaitForPanelAsync(cancellationToken);
+            SetStage(DshStage.Running);
+        }
+        catch (DshOperationException)
+        {
+            SetStage(DshStage.Failed);
+            throw;
         }
         finally
         {
@@ -101,6 +144,31 @@ internal sealed class DshOrchestrator : IDisposable
     }
 
     public void Stop() => StopCore();
+
+    public bool CancelInstall()
+    {
+        var process = Volatile.Read(ref _installProcess);
+        if (process is null || process.HasExited)
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _installCancellationRequested, 1);
+        AddOutput("正在停止 npm 安装进程…");
+        try
+        {
+            process.Kill(true);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
+    }
 
     private void StopCore()
     {
@@ -136,6 +204,7 @@ internal sealed class DshOrchestrator : IDisposable
             return;
         }
 
+        CancelInstall();
         _disposed = true;
         Stop();
         _operationLock.Dispose();
@@ -143,24 +212,184 @@ internal sealed class DshOrchestrator : IDisposable
 
     private async Task InstallAsync(CancellationToken cancellationToken)
     {
-        var startInfo = CreateProcessStartInfo("npm");
+        var startInfo = CreateProcessStartInfo("npm", Configuration.InstallationStagingDirectory);
         startInfo.ArgumentList.Add("install");
         startInfo.ArgumentList.Add("--no-save");
         startInfo.ArgumentList.Add("--no-package-lock");
         startInfo.ArgumentList.Add(_packageName);
+        startInfo.ArgumentList.Add("--foreground-scripts");
         startInfo.ArgumentList.Add("--loglevel");
         startInfo.ArgumentList.Add("warn");
 
         using var process = StartMonitoredProcess(startInfo);
+        _installProcess = process;
+        AddOutput("正在下载并安装 DSH 依赖。");
+        using var monitor = new InstallationMonitor(process, Configuration.InstallationStagingDirectory, AddOutput);
         await process.WaitForExitAsync(cancellationToken);
+        if (WasInstallCanceled)
+        {
+            AddOutput("安装已停止，正在回滚临时文件。");
+            throw new DshOperationException("安装已取消。");
+        }
+
         if (process.ExitCode != 0)
         {
             throw new DshOperationException($"DSH 安装失败。\n\n{GetRecentOutput()}");
         }
 
-        if (!IsInstalled)
+        if (!File.Exists(StagedPackageManifestPath))
         {
-            throw new DshOperationException("DSH 安装完成，但未找到本地包文件。");
+            throw new DshOperationException("DSH 安装完成，但未找到临时包文件。");
+        }
+
+        AddOutput("DSH 已下载完成，正在替换本地安装。");
+    }
+
+    private sealed class InstallationMonitor : IDisposable
+    {
+        private readonly CancellationTokenSource _cts = new();
+
+        public InstallationMonitor(Process process, string installationDirectory, Action<string> emit)
+        {
+            _ = MonitorAsync(process, installationDirectory, emit, _cts.Token);
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            _cts.Dispose();
+        }
+
+        private static async Task MonitorAsync(Process process, string installationDirectory, Action<string> emit, CancellationToken token)
+        {
+            var elapsed = Stopwatch.StartNew();
+            var previousPackageCount = -1;
+
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), token);
+                    if (process.HasExited)
+                    {
+                        return;
+                    }
+
+                    var packageCount = CountPackageDirectories(installationDirectory);
+                    var duration = $"{elapsed.Elapsed.Minutes} 分 {elapsed.Elapsed.Seconds} 秒";
+                    if (packageCount > previousPackageCount)
+                    {
+                        emit($"npm 正在写入依赖目录：已发现 {packageCount} 个包目录（已用时 {duration}）。");
+                    }
+                    else
+                    {
+                        emit($"npm 仍在执行下载或安装脚本（已用时 {duration}）。");
+                    }
+
+                    previousPackageCount = packageCount;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        private static int CountPackageDirectories(string installationDirectory)
+        {
+            var nodeModulesPath = Path.Combine(installationDirectory, "node_modules");
+            try
+            {
+                return Directory.EnumerateDirectories(nodeModulesPath).Count();
+            }
+            catch (IOException)
+            {
+                return 0;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return 0;
+            }
+        }
+    }
+
+    private static void PrepareInstallationStaging()
+    {
+        if (Directory.Exists(Configuration.InstallationStagingDirectory))
+        {
+            Directory.Delete(Configuration.InstallationStagingDirectory, true);
+        }
+
+        Directory.CreateDirectory(Configuration.InstallationStagingDirectory);
+    }
+
+    private void CommitInstallationStaging()
+    {
+        var stagedModulesDirectory = Path.Combine(Configuration.InstallationStagingDirectory, "node_modules");
+        var backupDirectory = Configuration.NodeModulesDirectory + ".rollback";
+
+        if (Directory.Exists(backupDirectory))
+        {
+            Directory.Delete(backupDirectory, true);
+        }
+
+        try
+        {
+            if (Directory.Exists(Configuration.NodeModulesDirectory))
+            {
+                Directory.Move(Configuration.NodeModulesDirectory, backupDirectory);
+            }
+
+            Directory.Move(stagedModulesDirectory, Configuration.NodeModulesDirectory);
+            Directory.Delete(Configuration.InstallationStagingDirectory, true);
+
+            if (Directory.Exists(backupDirectory))
+            {
+                Directory.Delete(backupDirectory, true);
+            }
+
+            AddOutput("DSH 安装完成，正在准备启动服务。");
+        }
+        catch
+        {
+            if (Directory.Exists(Configuration.NodeModulesDirectory) && Directory.Exists(backupDirectory))
+            {
+                Directory.Delete(Configuration.NodeModulesDirectory, true);
+            }
+
+            if (Directory.Exists(backupDirectory))
+            {
+                Directory.Move(backupDirectory, Configuration.NodeModulesDirectory);
+            }
+
+            throw;
+        }
+    }
+
+    private void RollbackInstallationStaging()
+    {
+        try
+        {
+            if (Directory.Exists(Configuration.InstallationStagingDirectory))
+            {
+                Directory.Delete(Configuration.InstallationStagingDirectory, true);
+            }
+
+            if (!_installationHadExistingPackage && Directory.Exists(Configuration.NodeModulesDirectory))
+            {
+                Directory.Delete(Configuration.NodeModulesDirectory, true);
+            }
+
+            AddOutput(WasInstallCanceled
+                ? "已取消安装并清理临时文件。"
+                : "安装失败，已清理临时文件。");
+        }
+        catch (IOException)
+        {
+            AddOutput("临时文件清理失败，可稍后重新安装。 ");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            AddOutput("临时文件清理失败，可稍后重新安装。 ");
         }
     }
 
@@ -199,7 +428,13 @@ internal sealed class DshOrchestrator : IDisposable
     }
 
     private static string PackageManifestPath => Path.Combine(
-        Configuration.DataDirectory,
+        Configuration.NodeModulesDirectory,
+        "@deepseek-ai",
+        "dsh",
+        "package.json");
+
+    private static string StagedPackageManifestPath => Path.Combine(
+        Configuration.InstallationStagingDirectory,
         "node_modules",
         "@deepseek-ai",
         "dsh",
@@ -343,6 +578,14 @@ internal sealed class DshOrchestrator : IDisposable
 
             _output.Enqueue(line);
         }
+
+        LogAppended?.Invoke(line);
+    }
+
+    private void SetStage(DshStage stage)
+    {
+        _stage = stage;
+        StageChanged?.Invoke(stage);
     }
 
     private string GetRecentOutput()
@@ -386,15 +629,29 @@ internal sealed class DshOrchestrator : IDisposable
         }
     }
 
-    private static ProcessStartInfo CreateProcessStartInfo(string command) => new()
+    private static ProcessStartInfo CreateProcessStartInfo(string command, string? workingDirectory = null)
     {
-        FileName = ResolveCommandPath(command),
-        WorkingDirectory = Configuration.DataDirectory,
-        UseShellExecute = false,
-        CreateNoWindow = true,
-        RedirectStandardOutput = true,
-        RedirectStandardError = true
-    };
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ResolveCommandPath(command),
+            WorkingDirectory = workingDirectory ?? Configuration.DataDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+            var nodeDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "nodejs");
+            startInfo.Environment["PATH"] = nodeDirectory + Path.PathSeparator
+                + (Environment.GetEnvironmentVariable("PATH") ?? string.Empty);
+        }
+
+        return startInfo;
+    }
 
     private static string ResolveCommandPath(string command)
     {
