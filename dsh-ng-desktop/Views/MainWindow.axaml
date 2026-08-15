@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:web="clr-namespace:Avalonia.Controls;assembly=Avalonia.Controls.WebView"
+        x:Class="DshNgDesktop.Views.MainWindow"
+        Title="DSH Desktop"
+        Width="1280"
+        Height="820"
+        MinWidth="900"
+        MinHeight="600"
+        WindowDecorations="None"
+        WindowStartupLocation="CenterScreen">
+  <Grid RowDefinitions="40,*">
+    <Border Grid.Row="0"
+            Background="#1F2937"
+            WindowDecorationProperties.ElementRole="TitleBar">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Margin="14,0"
+                   VerticalAlignment="Center"
+                   Foreground="White"
+                   FontWeight="SemiBold"
+                   Text="DSH Desktop" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button Width="46"
+                  Background="Transparent"
+                  Foreground="White"
+                  BorderBrush="Transparent"
+                  Content="—"
+                  Click="OnMinimizeClick" />
+          <Button Width="46"
+                  Background="Transparent"
+                  Foreground="White"
+                  BorderBrush="Transparent"
+                  Content="□"
+                  Click="OnMaximizeClick" />
+          <Button Width="46"
+                  Background="#B91C1C"
+                  Foreground="White"
+                  BorderBrush="Transparent"
+                  Content="×"
+                  Click="OnCloseClick" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <Grid Grid.Row="1">
+      <web:NativeWebView x:Name="DshWebView"
+                         Source="http://127.0.0.1:3080/"
+                         NavigationStarted="OnNavigationStarted"
+                         NavigationCompleted="OnNavigationCompleted" />
+      <Border x:Name="FailurePanel"
+              IsVisible="False"
+              Background="#F9FAFB"
+              Padding="32">
+        <StackPanel HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="12"
+                    MaxWidth="520">
+          <TextBlock Text="无法连接 DSH Web UI"
+                     FontSize="22"
+                     FontWeight="SemiBold"
+                     HorizontalAlignment="Center" />
+          <TextBlock x:Name="FailureMessage"
+                     Text="请先在终端运行 npx @deepseek-ai/dsh web，然后重新加载页面。"
+                     TextAlignment="Center"
+                     TextWrapping="Wrap" />
+          <Button Content="重新加载"
+                  HorizontalAlignment="Center"
+                  Click="OnReloadClick" />
+        </StackPanel>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

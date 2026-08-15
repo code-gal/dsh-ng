@@ -13,31 +13,14 @@ namespace DshNgDesktop;
 
 internal static partial class Program
 {
-	// 供安装向导窗口使用的 Avalonia 应用入口，不启动经典桌面生命周期。
+	// 本轮验证使用标准桌面生命周期直接显示内嵌 Web UI。
 	public static AppBuilder BuildAvaloniaApp() =>
 		AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace();
 
-	private static async Task Main()
+	[STAThread]
+	private static void Main(string[] args)
 	{
-		if (!OperatingSystem.IsWindows())
-		{
-			return;
-		}
-
-		try
-		{
-			await DshOrchestrator.InitializeEnvironmentAsync();
-		}
-		catch (NodeEnvironmentException)
-		{
-			ShowNodeEnvironmentError();
-			return;
-		}
-
-		var configuration = Configuration.Load();
-		using var orchestrator = new DshOrchestrator(configuration.Port);
-		using var trayApp = new TrayApp(orchestrator, configuration.Port);
-		trayApp.Run();
+		BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
 	}
 
 	private static void ShowNodeEnvironmentError()
