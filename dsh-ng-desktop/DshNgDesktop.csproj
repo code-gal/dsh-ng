@@ -10,6 +10,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Assets\dsh.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>DSH Desktop</AssemblyTitle>
     <Product>DSH Desktop</Product>
   </PropertyGroup>
