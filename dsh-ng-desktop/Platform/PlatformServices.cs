@@ -3,6 +3,7 @@ using Microsoft.Win32.SafeHandles;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Text;
 
 namespace DshNgDesktop.Platform;
 
@@ -173,12 +174,197 @@ internal sealed class WindowsPlatformServices : PlatformServicesBase
 [SupportedOSPlatform("macos")]
 internal sealed class MacOSPlatformServices : PlatformServicesBase
 {
+    private const string LaunchAgentsDirectoryName = "LaunchAgents";
+
     public MacOSPlatformServices()
         : base(PlatformKind.MacOS)
     {
     }
 
     public override IPlatformProcessGroup CreateProcessGroup() => new MacOSProcessGroup();
+
+    public override async Task<PlatformOperationResult> RegisterStartupAsync(StartupRegistration registration, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var plist = GetLaunchAgentPath(registration.ProductId);
+            Directory.CreateDirectory(Path.GetDirectoryName(plist)!);
+            await WriteLaunchAgentAsync(plist, registration, cancellationToken).ConfigureAwait(false);
+
+            // A stale registration can exist only after an interrupted prior
+            // attempt. bootout is intentionally best-effort before bootstrap;
+            // it is limited to this exact product label and plist path.
+            await RunLaunchCtlAsync("bootout", GetGuiDomain(), plist, cancellationToken).ConfigureAwait(false);
+            var registered = await RunLaunchCtlAsync("bootstrap", GetGuiDomain(), plist, cancellationToken).ConfigureAwait(false);
+            return registered.Succeeded
+                ? PlatformOperationResult.Success()
+                : PlatformOperationResult.Failure($"launchctl could not register the DSH Desktop login item: {registered.Error}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return PlatformOperationResult.Failure(exception.Message);
+        }
+    }
+
+    public override async Task<PlatformOperationResult> UnregisterStartupAsync(string productId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var plist = GetLaunchAgentPath(productId);
+            if (!File.Exists(plist))
+            {
+                return PlatformOperationResult.Success();
+            }
+
+            // launchctl reports an error when an interrupted installation left
+            // an unloaded plist. Deleting the exact product plist still makes
+            // rollback and uninstall idempotent.
+            await RunLaunchCtlAsync("bootout", GetGuiDomain(), plist, cancellationToken).ConfigureAwait(false);
+            File.Delete(plist);
+            return PlatformOperationResult.Success();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return PlatformOperationResult.Failure(exception.Message);
+        }
+    }
+
+    public override Task<StartupRegistrationState> GetStartupRegistrationStateAsync(string productId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            return Task.FromResult(File.Exists(GetLaunchAgentPath(productId))
+                ? StartupRegistrationState.Registered
+                : StartupRegistrationState.NotRegistered);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return Task.FromResult(StartupRegistrationState.Unknown);
+        }
+    }
+
+    public override Task<PlatformOperationResult> RegisterInstallationAsync(InstallationRegistration registration, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Directory.Exists(registration.InstallRoot))
+        {
+            return Task.FromResult(PlatformOperationResult.Failure("The macOS application bundle was not deployed before its package receipt was registered."));
+        }
+
+        // The signed .pkg owns the macOS installation receipt. Writing a
+        // product file into the already signed app bundle would invalidate its
+        // signature, so this seam verifies deployment but has no extra file
+        // registration to perform.
+        return Task.FromResult(PlatformOperationResult.Success());
+    }
+
+    public override Task<PlatformOperationResult> UnregisterInstallationAsync(string productId, CancellationToken cancellationToken = default)
+    {
+        // Unlike Windows, macOS has no per-user central uninstall registry.
+        // The package receipt and product-owned bundle are removed by the
+        // packaged uninstaller; rollback deletes the just-created bundle.
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(PlatformOperationResult.Success());
+    }
+
+    private static string GetLaunchAgentPath(string productId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productId);
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(userProfile, "Library", LaunchAgentsDirectoryName, $"{productId}.plist");
+    }
+
+    private static async Task WriteLaunchAgentAsync(string plistPath, StartupRegistration registration, CancellationToken cancellationToken)
+    {
+        var arguments = new List<string> { registration.ExecutablePath };
+        arguments.AddRange(registration.Arguments);
+        var document = new StringBuilder()
+            .AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+            .AppendLine("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">")
+            .AppendLine("<plist version=\"1.0\"><dict>")
+            .Append("<key>Label</key><string>").Append(XmlEscape(registration.ProductId)).AppendLine("</string>")
+            .AppendLine("<key>ProgramArguments</key><array>");
+        foreach (var argument in arguments)
+        {
+            document.Append("<string>").Append(XmlEscape(argument)).AppendLine("</string>");
+        }
+
+        document.AppendLine("</array><key>RunAtLoad</key><true/></dict></plist>");
+        var temporaryPath = $"{plistPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, document.ToString(), Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+            File.Move(temporaryPath, plistPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    private static async Task<PlatformOperationResult> RunLaunchCtlAsync(string command, string domain, string plist, CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "/bin/launchctl",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            }
+        };
+        process.StartInfo.ArgumentList.Add(command);
+        process.StartInfo.ArgumentList.Add(domain);
+        process.StartInfo.ArgumentList.Add(plist);
+        if (!process.Start())
+        {
+            return PlatformOperationResult.Failure("launchctl could not be started.");
+        }
+
+        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var error = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        if (process.ExitCode == 0)
+        {
+            return PlatformOperationResult.Success();
+        }
+
+        var detail = (await error.ConfigureAwait(false)).Trim();
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            detail = (await output.ConfigureAwait(false)).Trim();
+        }
+
+        return PlatformOperationResult.Failure(string.IsNullOrWhiteSpace(detail)
+            ? $"launchctl exited with code {process.ExitCode}."
+            : detail);
+    }
+
+    private static string GetGuiDomain() => $"gui/{MacOSUserId.GetCurrentUserId()}";
+
+    private static string XmlEscape(string value) => value
+        .Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal)
+        .Replace(">", "&gt;", StringComparison.Ordinal)
+        .Replace("\"", "&quot;", StringComparison.Ordinal)
+        .Replace("'", "&apos;", StringComparison.Ordinal);
+}
+
+[SupportedOSPlatform("macos")]
+internal static partial class MacOSUserId
+{
+    public static uint GetCurrentUserId() => GetUid();
+
+    [LibraryImport("libSystem.B.dylib", EntryPoint = "getuid")]
+    private static partial uint GetUid();
 }
 
 internal sealed class UnsupportedPlatformServices : PlatformServicesBase

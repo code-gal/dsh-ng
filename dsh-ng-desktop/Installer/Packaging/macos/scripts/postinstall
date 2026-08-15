@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+console_user="$(stat -f '%Su' /dev/console)"
+case "$console_user" in
+  ''|root|loginwindow) exit 0 ;;
+esac
+uid="$(id -u "$console_user")"
+home_directory="$(dscl . -read "/Users/$console_user" NFSHomeDirectory | awk '{print $2}')"
+bootstrap="/Library/Application Support/DSH Desktop Installer/DSH Desktop Installer.app/Contents/MacOS/DshNgDesktop"
+payload="/Library/Application Support/DSH Desktop Installer/DSH Desktop Installer.app/Contents/Resources/payload/DSH Desktop.app"
+target="$home_directory/Applications/DSH Desktop.app"
+
+# The native Avalonia bootstrap owns the visible transaction, health check and
+# compensation. launchctl asuser keeps its UI in the logged-in user's session.
+launchctl asuser "$uid" sudo -u "$console_user" "$bootstrap" --install --payload "$payload" --install-root "$target" >/dev/null 2>&1 &
+exit 0

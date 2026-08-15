@@ -2,7 +2,7 @@
 
 `dsh-ng-desktop` 是 DeepSeek Harness（DSH）的 Avalonia 跨平台桌面客户端，主要面向 Windows，同时支持 macOS。
 
-项目已完成共享基础与平台边界：显式应用状态机、受管路径与安装清单、结构化日志、单实例 IPC、平台服务接口、环境诊断和 AOT 静态门禁均已就绪。后续将按 Spec 实现 DSH 供应与监督、平台安装器、Avalonia 托盘、内嵌 DSH Web UI 和干净卸载。
+项目已完成 M1 至 M3：共享状态机、受管路径与安装清单、结构化日志、单实例 IPC、环境诊断、AOT 静态门禁、DSH 供应与监督，以及带补偿回滚的原生安装器事务。Windows 当前用户安装器和 macOS `.pkg` 构建入口均已就绪；后续按 Spec 实现运行窗口、WebView、托盘与完整运行中卸载协作。
 
 正式安装包仅通过 GitHub Releases 发布。正式 .NET 产物以 Native AOT、自包含构建为准入条件，同时支持非 AOT self-contained 安装和普通源码构建。
 

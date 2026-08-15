@@ -15,7 +15,7 @@
                FontSize="28"
                FontWeight="SemiBold"
                HorizontalAlignment="Center" />
-    <TextBlock Text="共享基础与平台边界已就绪，DSH 供应将在后续里程碑中实现。"
+    <TextBlock Text="DSH Desktop 已完成安装。运行窗口、WebView 与托盘体验将在后续里程碑中启用。"
                Opacity="0.7"
                TextAlignment="Center" />
   </StackPanel>

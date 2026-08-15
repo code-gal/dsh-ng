@@ -59,6 +59,15 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 - 自启动与系统卸载注册放在事务末尾；部分失败必须执行补偿操作。
 - 失败日志先供用户查看，退出安装器时再按失败清理策略处理。
 
+### 4.1 SetupCoordinator 与部署边界
+
+- `SetupCoordinator` 是安装事务的唯一编排者。它只通过 `EnvironmentDoctor`、`IClientDeployment`、`DshSupervisor`、`IPlatformServices` 和 `InstallManifest` 操作外部资源，界面不得直接复制文件、注册系统项或结束进程。
+- 安装包负载目录与目标 `InstallRoot` 必须不同。`IClientDeployment` 先在目标目录的同级临时目录完整复制负载，再原子移动到受管 `InstallRoot`；已存在的目标目录不覆盖，避免失败安装破坏已提交的客户端。
+- `Preflight` 只把平台、Node、npx 与产品数据父目录的错误作为阻断条件；端口冲突和 WebView 缺失以可理解的预警显示，DSH 端口由 Supervisor 在后续阶段迁移。
+- 事务完成顺序固定为：前置检测、部署客户端、启动并验证 DSH Web UI、注册当前用户自启动、注册平台卸载入口、保存 `InstallManifest`、提交。未到 `Committed` 的资源必须按相反顺序补偿。
+- 回滚只接受本次部署记录和内存中的、已通过 `AppPaths` 校验的 `InstallManifest`。它先停止 Supervisor，再注销自启动与卸载入口，随后删除清单内目录和本次部署目录；不根据名称、PATH 或工作区内容扩展删除范围。
+- 回滚时保留安装日志供失败页查看；安装器退出后才删除该失败日志。失败日志本身不是可运行安装的一部分。
+
 ## 5. DSH 运行环境
 
 ### 5.1 命令和环境
@@ -175,7 +184,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 - 分别构建 Apple Silicon 与 Intel 产物，并完成签名、公证和安装器封装。
 - 正式安装器执行与 Windows 相同的供应事务；不把拖拽 `.app` 视为完整安装流程。
-- 使用 Service Management 注册和注销登录项。
+- 使用用户会话的 Service Management (`launchctl` LaunchAgent) 注册和注销登录项；plist 只能引用已提交的 app bundle，并以产品 ID 作为唯一 label。
 - 提供明确的完整卸载入口，清除 app bundle、Application Support、Caches 和 WebKit 数据存储。
 - Native AOT 分别在 Intel 与 Apple Silicon 构建环境生成；非 AOT、自包含安装器使用相同签名、公证和安装事务。
 

@@ -151,11 +151,23 @@ public interface ILoopbackPortReservationProvider
 }
 
 /// <summary>
+/// The installer consumes only the start/stop contract. The concrete
+/// supervisor remains the sole production owner of npx, Node and DSH process
+/// trees while installer tests can use a controlled runtime boundary.
+/// </summary>
+public interface IDshRuntimeSupervisor
+{
+    Task<DshStartResult> StartAsync(CancellationToken cancellationToken = default);
+
+    Task StopAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// The sole owner of DSH npx/Node process trees. It has injectable process,
 /// HTTP and port seams so supply and supervision can be verified without
 /// running a real DSH package in unit tests.
 /// </summary>
-public sealed class DshSupervisor : IAsyncDisposable
+public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
 {
     private readonly AppPaths _paths;
     private readonly IPlatformServices _platformServices;

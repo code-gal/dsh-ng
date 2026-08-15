@@ -31,12 +31,17 @@ public sealed record EnvironmentDiagnosticReport(
     public bool HasErrors => Checks.Any(check => check.Severity == DiagnosticSeverity.Error);
 }
 
+public interface IInstallerPreflight
+{
+    Task<EnvironmentDiagnosticReport> RunInstallerPreflightAsync(CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// A reusable, side-effect-free inspection of the local prerequisites. It does
 /// not install Node, create product directories, alter startup registration or
 /// delete caches; callers choose any repair action separately.
 /// </summary>
-public sealed class EnvironmentDoctor
+public sealed class EnvironmentDoctor : IInstallerPreflight
 {
     private readonly AppPaths _paths;
     private readonly IPlatformServices _platformServices;
@@ -57,6 +62,28 @@ public sealed class EnvironmentDoctor
         AddWebViewPrerequisiteCheck(checks);
         await AddDshHealthCheckAsync(checks, cancellationToken).ConfigureAwait(false);
         await AddStartupCheckAsync(checks, cancellationToken).ConfigureAwait(false);
+
+        return new EnvironmentDiagnosticReport(
+            DateTimeOffset.UtcNow,
+            Environment.OSVersion.VersionString,
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
+            checks);
+    }
+
+    /// <summary>
+    /// Performs the non-mutating checks which can block a new installation.
+    /// A previous DSH runtime or login registration is intentionally excluded:
+    /// neither can exist on a fresh transaction and neither should turn a
+    /// recoverable install into a false prerequisite failure.
+    /// </summary>
+    public async Task<EnvironmentDiagnosticReport> RunInstallerPreflightAsync(CancellationToken cancellationToken = default)
+    {
+        var checks = new List<DiagnosticCheckResult>();
+        AddPlatformCheck(checks);
+        await AddExecutableChecksAsync(checks, cancellationToken).ConfigureAwait(false);
+        AddStorageCheck(checks);
+        AddLoopbackPortCheck(checks);
+        AddWebViewPrerequisiteCheck(checks);
 
         return new EnvironmentDiagnosticReport(
             DateTimeOffset.UtcNow,
