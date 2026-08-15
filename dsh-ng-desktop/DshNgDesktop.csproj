@@ -9,6 +9,16 @@
     <IsAotCompatible>true</IsAotCompatible>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Assets\dsh.ico</ApplicationIcon>
+    <AssemblyTitle>DSH Desktop</AssemblyTitle>
+    <Product>DSH Desktop</Product>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\dsh.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 
 </Project>
