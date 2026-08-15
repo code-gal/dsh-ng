@@ -9,6 +9,21 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>DSH Desktop</AssemblyTitle>
     <Product>DSH Desktop</Product>
+    <DshPublishMode Condition="'$(DshPublishMode)' == ''">Aot</DshPublishMode>
+    <PublishAot Condition="'$(PublishAot)' == '' and '$(DshPublishMode)' == 'Aot'">true</PublishAot>
+    <PublishAot Condition="'$(PublishAot)' == '' and '$(DshPublishMode)' == 'Compatibility'">false</PublishAot>
+    <SelfContained Condition="'$(SelfContained)' == '' and '$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishSingleFile Condition="'$(PublishSingleFile)' == '' and '$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <PublishTrimmed Condition="'$(PublishTrimmed)' == ''">true</PublishTrimmed>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

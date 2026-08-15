@@ -1,12 +1,15 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using DshNgDesktop.Core;
 using DshNgDesktop.Views;
 
 namespace DshNgDesktop;
 
 internal sealed class App : Application
 {
+    public ApplicationStateMachine StateMachine { get; } = new();
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted()
