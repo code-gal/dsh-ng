@@ -48,6 +48,9 @@ yarn-error.log*
 # 4. 项目特有目录与测试
 ###############################################################################
 # 忽略临时数据和工作区缓存（例如桌面壳的专有数据测试目录）
+# 本地专属单测工程，不进入 Git 协同
+*.LocalTests/
+LocalTests/
 /dsh-ng-desktop/App_Data/
 /dsh-ng-desktop/Temp/
 #忽略vscode-counter的统计文件
