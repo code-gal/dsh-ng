@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DshNgDesktop.Core;
+using DshNgDesktop.Dsh;
 using DshNgDesktop.Platform;
 
 namespace DshNgDesktop.Diagnostics;
@@ -30,8 +31,6 @@ public sealed record EnvironmentDiagnosticReport(
     public bool HasErrors => Checks.Any(check => check.Severity == DiagnosticSeverity.Error);
 }
 
-public sealed record DshRuntimeState(int Port);
-
 /// <summary>
 /// A reusable, side-effect-free inspection of the local prerequisites. It does
 /// not install Node, create product directories, alter startup registration or
@@ -52,8 +51,7 @@ public sealed class EnvironmentDoctor
     {
         var checks = new List<DiagnosticCheckResult>();
         AddPlatformCheck(checks);
-        AddExecutableCheck(checks, "node", "Node.js", "Install a supported system Node.js release and make node available on PATH.");
-        AddExecutableCheck(checks, "npx", "npx", "Install the npm distribution that supplies npx and make it available on PATH.");
+        await AddExecutableChecksAsync(checks, cancellationToken).ConfigureAwait(false);
         AddStorageCheck(checks);
         AddLoopbackPortCheck(checks);
         AddWebViewPrerequisiteCheck(checks);
@@ -78,19 +76,23 @@ public sealed class EnvironmentDoctor
         checks.Add(Error("platform.unsupported", "Platform", "This operating system is not a supported desktop target.", "Run DSH Desktop on Windows or macOS."));
     }
 
-    private static void AddExecutableCheck(
-        List<DiagnosticCheckResult> checks,
-        string executable,
-        string displayName,
-        string remediation)
+    private static async Task AddExecutableChecksAsync(List<DiagnosticCheckResult> checks, CancellationToken cancellationToken)
     {
-        if (FindExecutable(executable) is not null)
+        var validation = await new SystemDshExecutableValidator(TimeSpan.FromSeconds(5)).ValidateAsync(cancellationToken)
+            .ConfigureAwait(false);
+        AddExecutableCheck(checks, validation.Node, "Node.js");
+        AddExecutableCheck(checks, validation.Npx, "npx");
+    }
+
+    private static void AddExecutableCheck(List<DiagnosticCheckResult> checks, DshCommandProbeResult result, string displayName)
+    {
+        if (result.Succeeded)
         {
-            checks.Add(Pass($"{executable}.available", displayName, $"{displayName} is available on PATH."));
+            checks.Add(Pass($"{result.Command}.available", displayName, $"{displayName} is available on PATH ({result.Version})."));
             return;
         }
 
-        checks.Add(Error($"{executable}.missing", displayName, $"{displayName} was not found on PATH.", remediation));
+        checks.Add(Error($"{result.Command}.unavailable", displayName, result.Error ?? $"{displayName} could not be validated.", result.Remediation));
     }
 
     private void AddStorageCheck(List<DiagnosticCheckResult> checks)
@@ -206,9 +208,7 @@ public sealed class EnvironmentDoctor
         DshRuntimeState? runtimeState;
         try
         {
-            await using var stream = File.OpenRead(_paths.RuntimeStatePath);
-            runtimeState = await JsonSerializer.DeserializeAsync(stream, EnvironmentDiagnosticJsonContext.Default.DshRuntimeState, cancellationToken)
-                .ConfigureAwait(false);
+            runtimeState = await new DshRuntimeStateStore(_paths).LoadAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
         {
@@ -232,15 +232,11 @@ public sealed class EnvironmentDoctor
 
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            using var response = await client.GetAsync($"http://127.0.0.1:{runtimeState.Port}/", cancellationToken).ConfigureAwait(false);
-            checks.Add(response.IsSuccessStatusCode
-                ? Pass("dsh.http-available", "DSH Web UI", "The persisted DSH loopback endpoint returned a successful HTTP response.")
-                : Error(
-                    "dsh.http-unhealthy",
-                    "DSH Web UI",
-                    $"The persisted DSH loopback endpoint returned HTTP {(int)response.StatusCode}.",
-                    "Restart DSH Desktop and inspect the runtime log."));
+            using var probe = new DshHttpHealthProbe(TimeSpan.FromSeconds(2));
+            var result = await probe.ProbeAsync(new Uri($"http://127.0.0.1:{runtimeState.Port}/", UriKind.Absolute), cancellationToken).ConfigureAwait(false);
+            checks.Add(result.IsHealthy
+                ? Pass("dsh.web-ui-verified", "DSH Web UI", "The persisted DSH loopback endpoint passed DSH Web UI identity validation.")
+                : Error("dsh.http-unhealthy", "DSH Web UI", result.Detail, "Restart DSH Desktop and inspect the runtime log."));
         }
         catch (HttpRequestException exception)
         {
@@ -279,32 +275,6 @@ public sealed class EnvironmentDoctor
     private static DiagnosticCheckResult Error(string code, string title, string detail, string remediation) =>
         new(code, DiagnosticSeverity.Error, title, detail, remediation);
 
-    private static string? FindExecutable(string name)
-    {
-        var candidates = OperatingSystem.IsWindows()
-            ? new[] { $"{name}.exe", $"{name}.cmd", $"{name}.bat", name }
-            : new[] { name };
-        var rawPath = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(rawPath))
-        {
-            return null;
-        }
-
-        foreach (var directory in rawPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            foreach (var candidate in candidates)
-            {
-                var executable = Path.Combine(directory, candidate);
-                if (File.Exists(executable))
-                {
-                    return executable;
-                }
-            }
-        }
-
-        return null;
-    }
-
     private static string? FindExistingParent(string path)
     {
         var current = new DirectoryInfo(Path.GetFullPath(path));
@@ -319,5 +289,4 @@ public sealed class EnvironmentDoctor
 
 [JsonSourceGenerationOptions(WriteIndented = true, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(EnvironmentDiagnosticReport))]
-[JsonSerializable(typeof(DshRuntimeState))]
 public sealed partial class EnvironmentDiagnosticJsonContext : JsonSerializerContext;

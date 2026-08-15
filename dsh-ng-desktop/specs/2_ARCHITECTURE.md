@@ -117,6 +117,16 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - `DSH_HOME` 属于用户在客户端内形成的数据，不参与自动修复清理；重置它必须是独立、明确、带警告的用户操作，且不属于首轮范围。
 - 第一版不引入 Windows Service、macOS LaunchDaemon、常驻更新器或独立 watchdog；仅当真实验收证明进程残留无法由 Job Object/process group 和下次启动恢复解决时再扩展。
 
+### 5.6 DSH Supervisor
+
+- `DshSupervisor` 是唯一允许创建和停止 DSH 进程的共享服务。调用方通过 `DshSupervisorOptions` 提供超时、重试和可替换的进程/HTTP 边界；生产默认值固定为未锁版本的 npx 命令。
+- 启动前以受限时的 `node --version` 与 `npx --version` 验证可执行文件。解析顺序遵循当前进程 `PATH`，Windows 同时支持 `.exe`、`.cmd` 和 `.bat`；不调用 npm 安装、不改写系统环境。
+- Supervisor 创建 `npm_config_cache`、`DSH_HOME` 和 `launcher-cwd` 后，以 `npx --yes @deepseek-ai/dsh web --host 127.0.0.1 --port <port>` 启动。子进程只继承必要环境，并固定工作目录为 `launcher-cwd`。
+- 端口选择依次尝试已持久化端口、3080 和临时保留的 loopback 端口。启动期间若端口被抢占或进程提前退出，释放候选并换端口重试；从不接管或终止未知监听者。
+- 健康检查同时验证 HTTP 成功、响应中的 DSH 页面特征以及所记录子进程仍存活。成功后持久化端口、PID、进程启动时间和实例标识；持久化状态仅用于诊断和下次优先选端口，不能构成对既有进程的所有权声明。
+- Windows 的受管进程加入专属 Job Object；macOS 的受管进程加入独立 process group。停止先向该受管集合请求优雅退出，超时后仅终止同一集合。绑定失败立即停止刚创建的子进程并报告启动失败。
+- 进程异常退出触发一次状态通知和运行日志。`StartWithRecoveryAsync` 最多执行一次普通启动重试；只有调用方明确确认私有 npm cache 损坏时才删除该 cache，并允许一次额外启动，不删除 `DSH_HOME`。
+
 ## 6. 桌面应用结构
 
 ### 6.1 逻辑模块
@@ -131,6 +141,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 | `MainWindow` | 原生安装/错误页面与就绪后的 WebView 容器 |
 | `AppLog` | 结构化日志、滚动、脱敏和日志定位 |
 | `EnvironmentDoctor` | 安装、运行和命令行复用的只读环境诊断与有限修复判定 |
+| `DshSupervisor` | Node/npx 验证、私有 npx 启动、端口/健康检查、进程所有权、停止和有限恢复 |
 
 不再限制 `.cs` 文件数量，也不把平台互操作堆入 `Program.cs`。保持直接、可测试的服务边界，不为简单 UI 引入重型框架。
 
