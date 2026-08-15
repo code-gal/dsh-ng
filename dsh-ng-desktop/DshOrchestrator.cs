@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net.Sockets;
+using System.Text.Json;
 
 namespace DshNgDesktop;
 
@@ -13,6 +14,8 @@ internal sealed class NodeEnvironmentException : Exception
 }
 
 internal sealed class DshOperationException(string message) : Exception(message);
+
+internal sealed record UpdateCheckResult(string? InstalledVersion, string? LatestVersion, bool UpdateAvailable);
 
 internal sealed class DshOrchestrator : IDisposable
 {
@@ -28,6 +31,12 @@ internal sealed class DshOrchestrator : IDisposable
         _port = port;
     }
 
+    public bool IsInstalled => File.Exists(PackageManifestPath);
+
+    public bool IsRunning => _dshProcess is { HasExited: false };
+
+    public string? InstalledVersion => TryReadInstalledVersion();
+
     public static async Task InitializeEnvironmentAsync(CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(Configuration.DataDirectory);
@@ -35,9 +44,42 @@ internal sealed class DshOrchestrator : IDisposable
         await AssertCommandAvailableAsync("npm", cancellationToken);
     }
 
+    public async Task InstallOrUpdateAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _operationLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            StopCore();
+            await InstallAsync(cancellationToken);
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    public async Task<UpdateCheckResult> CheckForUpdateAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var installedVersion = TryReadInstalledVersion();
+        var latestVersion = await ReadLatestVersionAsync(cancellationToken);
+        var updateAvailable = installedVersion is not null
+            && IsNewerVersion(latestVersion, installedVersion);
+
+        return new UpdateCheckResult(installedVersion, latestVersion, updateAvailable);
+    }
+
     public async Task EnsureRunningAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!IsInstalled)
+        {
+            throw new DshOperationException("尚未安装 DSH。请先从托盘菜单安装。");
+        }
+
         await _operationLock.WaitAsync(cancellationToken);
 
         try
@@ -49,7 +91,6 @@ internal sealed class DshOrchestrator : IDisposable
 
             _dshProcess?.Dispose();
             _dshProcess = null;
-            await InstallAsync(cancellationToken);
             StartDsh();
             await WaitForPanelAsync(cancellationToken);
         }
@@ -59,7 +100,9 @@ internal sealed class DshOrchestrator : IDisposable
         }
     }
 
-    public void Stop()
+    public void Stop() => StopCore();
+
+    private void StopCore()
     {
         var process = Interlocked.Exchange(ref _dshProcess, null);
         if (process is null)
@@ -114,6 +157,104 @@ internal sealed class DshOrchestrator : IDisposable
         {
             throw new DshOperationException($"DSH 安装失败。\n\n{GetRecentOutput()}");
         }
+
+        if (!IsInstalled)
+        {
+            throw new DshOperationException("DSH 安装完成，但未找到本地包文件。");
+        }
+    }
+
+    private async Task<string> ReadLatestVersionAsync(CancellationToken cancellationToken)
+    {
+        var startInfo = CreateProcessStartInfo("npm");
+        startInfo.ArgumentList.Add("view");
+        startInfo.ArgumentList.Add(_packageName);
+        startInfo.ArgumentList.Add("version");
+        startInfo.ArgumentList.Add("--loglevel");
+        startInfo.ArgumentList.Add("error");
+
+        using var process = Process.Start(startInfo) ?? throw new DshOperationException("无法启动 npm 以检测更新。");
+        var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+        var output = (await outputTask).Trim();
+        var error = (await errorTask).Trim();
+
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            AddOutput(output);
+        }
+
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            AddOutput(error);
+        }
+
+        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
+        {
+            throw new DshOperationException($"无法检测 DSH 更新。\n\n{GetRecentOutput()}");
+        }
+
+        return output;
+    }
+
+    private static string PackageManifestPath => Path.Combine(
+        Configuration.DataDirectory,
+        "node_modules",
+        "@deepseek-ai",
+        "dsh",
+        "package.json");
+
+    private static string? TryReadInstalledVersion()
+    {
+        if (!File.Exists(PackageManifestPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(PackageManifestPath);
+            var manifest = JsonSerializer.Deserialize(stream, AppJsonSerializerContext.Default.PackageManifest);
+            return string.IsNullOrWhiteSpace(manifest?.Version) ? null : manifest.Version;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsNewerVersion(string latestVersion, string installedVersion)
+    {
+        if (Version.TryParse(NormalizeVersion(latestVersion), out var latest)
+            && Version.TryParse(NormalizeVersion(installedVersion), out var installed))
+        {
+            return latest > installed;
+        }
+
+        return !string.Equals(latestVersion, installedVersion, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeVersion(string version)
+    {
+        var normalized = version.Trim();
+        if (normalized.StartsWith('v') || normalized.StartsWith('V'))
+        {
+            normalized = normalized[1..];
+        }
+
+        var plus = normalized.IndexOf('+');
+        if (plus >= 0)
+        {
+            normalized = normalized[..plus];
+        }
+
+        var dash = normalized.IndexOf('-');
+        return dash >= 0 ? normalized[..dash] : normalized;
     }
 
     private void StartDsh()

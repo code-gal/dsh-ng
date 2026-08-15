@@ -1,4 +1,5 @@
-﻿using System.ComponentModel;
+﻿using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -44,11 +45,17 @@ internal static partial class Program
 		}
 	}
 
+	private static void ShowDshOperationError(string heading, string message) =>
+		ShowTaskDialog(heading, message, new nint(-2), 0x00000001);
+
 	private static void ShowDshOperationError(string message) =>
-		ShowTaskDialog("无法启动 DSH", message, new nint(-2), 0x00000001);
+		ShowDshOperationError("无法完成操作", message);
 
 	private static void ShowInformation(string heading, string message) =>
 		ShowTaskDialog(heading, message, new nint(-3), 0x00000001);
+
+	private static bool Confirm(string heading, string message) =>
+		ShowTaskDialog(heading, message, new nint(-3), 0x00000006) == 6;
 
 	private static int ShowTaskDialog(string heading, string message, nint icon, uint buttons)
 	{
@@ -74,27 +81,39 @@ internal static partial class Program
 		private const uint _commandOpenPanel = 1002;
 		private const uint _commandStartup = 1003;
 		private const uint _commandExit = 1004;
+		private const uint _commandInstall = 1005;
+		private const uint _commandCheckUpdate = 1006;
+		private const uint _commandUpdate = 1007;
 		private const uint _wmCommand = 0x0111;
 		private const uint _wmContextMenu = 0x007B;
 		private const uint _wmLeftButtonDoubleClick = 0x0203;
 		private const uint _wmRightButtonUp = 0x0205;
+		private const uint _wmInvoke = 0x8002;
 		private const uint _nimAdd = 0x00000000;
 		private const uint _nimDelete = 0x00000002;
 		private const uint _nimSetVersion = 0x00000004;
 		private const uint _notifyIconVersion4 = 4;
+		private const uint _nimModify = 0x00000001;
 		private const uint _nifMessage = 0x00000001;
 		private const uint _nifIcon = 0x00000002;
 		private const uint _nifTip = 0x00000004;
+		private const uint _nifInfo = 0x00000010;
+		private const uint _niifInfo = 0x00000001;
 		private const uint _mfString = 0x00000000;
-		private const uint _mfByCommand = 0x00000000;
+		private const uint _mfGrayed = 0x00000001;
+		private const uint _mfSeparator = 0x00000800;
 		private const uint _tpmRightButton = 0x0002;
 		private const uint _imageIcon = 1;
 		private const uint _lrLoadFromFile = 0x0010;
 		private const uint _lrDefaultSize = 0x0040;
 
-		private static SafeMenuHandle? _menu;
+		private static readonly ConcurrentQueue<Action> _uiActions = new();
+		private static TrayApp? _current;
 		private static DshOrchestrator? _orchestrator;
 		private static int _port;
+		private static int _uiThreadId;
+		private static bool _busy;
+		private static bool _updateAvailable;
 		private readonly nint _instance;
 		private readonly SafeWindowHandle _window;
 		private nint _icon;
@@ -104,6 +123,7 @@ internal static partial class Program
 
 		public unsafe TrayApp(DshOrchestrator orchestrator, int port)
 		{
+			_current = this;
 			_orchestrator = orchestrator;
 			_port = port;
 			MigrateLegacyStartupEntry();
@@ -146,22 +166,13 @@ internal static partial class Program
 			{
 				throw new Win32Exception(Marshal.GetLastPInvokeError());
 			}
-
-			_menu = CreatePopupMenu();
-			if (_menu.IsInvalid ||
-				!AppendMenuW(_menu, _mfString, _commandMount, "启动 DSH") ||
-				!AppendMenuW(_menu, _mfString, _commandOpenPanel, "打开面板") ||
-				!AppendMenuW(_menu, _mfString, _commandStartup, "开机启动") ||
-				!AppendMenuW(_menu, _mfString, _commandExit, "退出"))
-			{
-				throw new Win32Exception(Marshal.GetLastPInvokeError());
-			}
 		}
 
 		public void Run()
 		{
+			_uiThreadId = Environment.CurrentManagedThreadId;
 			AddTrayIcon();
-			_ = StartDshAsync(false);
+			_ = InitializeSessionAsync();
 
 			int result;
 			while ((result = GetMessageW(out var message, nint.Zero, 0, 0)) > 0)
@@ -195,9 +206,8 @@ internal static partial class Program
 				DestroyIcon(_icon);
 			}
 
-			_menu?.Dispose();
-			_menu = null;
 			_orchestrator = null;
+			_current = null;
 			_window.Dispose();
 			UnregisterClassW(_windowClassName, _instance);
 		}
@@ -240,10 +250,66 @@ internal static partial class Program
 				hIcon = _icon
 			};
 
-			char* tip = icon.szTip;
-			"dsh-ng-desktop".AsSpan().CopyTo(new Span<char>(tip, 128));
-
+			CopyFixed(icon.szTip, 128, GetTipText());
 			return icon;
+		}
+
+		private void RefreshTrayIcon()
+		{
+			if (!_iconAdded)
+			{
+				return;
+			}
+
+			var icon = CreateNotificationData();
+			ShellNotifyIconW(_nimModify, ref icon);
+		}
+
+		private void ShowBalloon(string title, string message)
+		{
+			if (!_iconAdded)
+			{
+				return;
+			}
+
+			var icon = CreateNotificationData();
+			icon.uFlags |= _nifInfo;
+			icon.dwInfoFlags = _niifInfo;
+			unsafe
+			{
+				CopyFixed(icon.szInfoTitle, 64, title);
+				CopyFixed(icon.szInfo, 256, message);
+			}
+
+			ShellNotifyIconW(_nimModify, ref icon);
+		}
+
+		private static unsafe void CopyFixed(char* destination, int length, string value)
+		{
+			var span = new Span<char>(destination, length);
+			span.Clear();
+			var text = value.Length >= length ? value[..(length - 1)] : value;
+			text.AsSpan().CopyTo(span);
+		}
+
+		private static string GetTipText()
+		{
+			if (_orchestrator is null)
+			{
+				return "DSH Desktop";
+			}
+
+			if (!_orchestrator.IsInstalled)
+			{
+				return "DSH Desktop · 未安装";
+			}
+
+			if (_updateAvailable)
+			{
+				return "DSH Desktop · 有新版本";
+			}
+
+			return _orchestrator.IsRunning ? "DSH Desktop · 运行中" : "DSH Desktop · 已安装";
 		}
 
 		[UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
@@ -258,24 +324,39 @@ internal static partial class Program
 						ShowContextMenu(window);
 						return nint.Zero;
 					case _wmLeftButtonDoubleClick:
-						_ = StartDshAsync(true);
+						_ = HandlePrimaryActionAsync();
 						return nint.Zero;
 				}
+			}
+
+			if (message == _wmInvoke)
+			{
+				DrainUiActions();
+				return nint.Zero;
 			}
 
 			if (message == _wmCommand)
 			{
 				switch ((uint)wParam & 0xFFFF)
 				{
+					case _commandInstall:
+						_ = PromptAndInstallAsync(true);
+						return nint.Zero;
 					case _commandMount:
-							_ = StartDshAsync(false);
-							return nint.Zero;
-						case _commandOpenPanel:
-							_ = StartDshAsync(true);
-							return nint.Zero;
-						case _commandStartup:
-							ToggleStartup();
-							return nint.Zero;
+						_ = StartDshAsync(false);
+						return nint.Zero;
+					case _commandOpenPanel:
+						_ = StartDshAsync(true);
+						return nint.Zero;
+					case _commandCheckUpdate:
+						_ = CheckForUpdateAsync(true);
+						return nint.Zero;
+					case _commandUpdate:
+						_ = PromptAndUpdateAsync();
+						return nint.Zero;
+					case _commandStartup:
+						ToggleStartup();
+						return nint.Zero;
 					case _commandExit:
 						PostQuitMessage(0);
 						return nint.Zero;
@@ -285,7 +366,90 @@ internal static partial class Program
 			return DefWindowProcW(window, message, wParam, lParam);
 		}
 
-		private static async Task StartDshAsync(bool openPanel)
+		private static async Task InitializeSessionAsync()
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			_current?.RefreshTrayIcon();
+			if (!_orchestrator.IsInstalled)
+			{
+				_current?.ShowBalloon("尚未安装 DSH", "首次使用需要先安装到本地私有目录。");
+				await PromptAndInstallAsync(true);
+				return;
+			}
+
+			await StartDshAsync(false);
+			await CheckForUpdateAsync(false);
+		}
+
+		private static async Task HandlePrimaryActionAsync()
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			if (_orchestrator.IsInstalled)
+			{
+				await StartDshAsync(true);
+				return;
+			}
+
+			await PromptAndInstallAsync(true);
+		}
+
+		private static async Task PromptAndInstallAsync(bool confirm)
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			if (_orchestrator.IsInstalled)
+			{
+				await ShowInformationAsync("DSH 已安装", "可从托盘菜单打开面板或检测更新。");
+				return;
+			}
+
+			if (confirm && !await ConfirmAsync(
+				"安装 DSH",
+				"尚未安装 DSH。是否现在安装到本地私有目录？\n\n安装过程可能需要一两分钟，完成后即可打开面板。"))
+			{
+				await ShowInformationAsync("已跳过安装", "需要时请从托盘菜单选择“安装 DSH”。");
+				return;
+			}
+
+			await InstallOrUpdateCoreAsync(false);
+		}
+
+		private static async Task PromptAndUpdateAsync()
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			if (!_orchestrator.IsInstalled)
+			{
+				await PromptAndInstallAsync(true);
+				return;
+			}
+
+			var currentVersion = _orchestrator.InstalledVersion ?? "未知";
+			if (!await ConfirmAsync(
+				"更新 DSH",
+				$"当前版本：{currentVersion}\n\n将下载并安装 npm 上的最新版本。更新期间会暂时停止正在运行的 DSH。是否继续？"))
+			{
+				return;
+			}
+
+			await InstallOrUpdateCoreAsync(true);
+		}
+
+		private static async Task StartDshAfterInstallAsync()
 		{
 			if (_orchestrator is null)
 			{
@@ -294,19 +458,264 @@ internal static partial class Program
 
 			try
 			{
+				await ShowBalloonAsync("正在启动 DSH", "安装已完成，正在拉起后台服务。");
 				await _orchestrator.EnsureRunningAsync();
+				await RefreshTrayIconAsync();
+				await ShowBalloonAsync("DSH 已启动", $"面板地址：http://localhost:{_port}/");
+			}
+			catch (DshOperationException exception)
+			{
+				await ShowErrorAsync("无法启动 DSH", exception.Message);
+			}
+		}
+
+		private static async Task StartDshAsync(bool openPanel)
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			if (!_orchestrator.IsInstalled)
+			{
+				await ShowInformationAsync("尚未安装 DSH", "打开面板或启动服务前，请先从托盘菜单安装 DSH。");
+				return;
+			}
+
+			if (!TryBeginOperation())
+			{
+				return;
+			}
+
+			try
+			{
+				if (!_orchestrator.IsRunning)
+				{
+					await ShowBalloonAsync("正在启动 DSH", "正在拉起后台服务，请稍候。");
+				}
+
+				await _orchestrator.EnsureRunningAsync();
+				await RefreshTrayIconAsync();
 				if (openPanel)
 				{
 					Process.Start(new ProcessStartInfo($"http://localhost:{_port}/") { UseShellExecute = true });
 				}
+				else
+				{
+					await ShowBalloonAsync("DSH 已启动", $"面板地址：http://localhost:{_port}/");
+				}
 			}
 			catch (DshOperationException exception)
 			{
-				ShowDshOperationError(exception.Message);
+				await ShowErrorAsync("无法启动 DSH", exception.Message);
 			}
 			catch (Win32Exception)
 			{
-				ShowDshOperationError("无法打开默认浏览器或启动 DSH。");
+				await ShowErrorAsync("无法打开默认浏览器或启动 DSH。");
+			}
+			finally
+			{
+				EndOperation();
+			}
+		}
+
+		private static async Task CheckForUpdateAsync(bool prompted)
+		{
+			if (_orchestrator is null)
+			{
+				return;
+			}
+
+			if (!_orchestrator.IsInstalled)
+			{
+				if (prompted)
+				{
+					await ShowInformationAsync("尚未安装 DSH", "请先安装 DSH，然后再检测更新。");
+				}
+
+				return;
+			}
+
+			if (!TryBeginOperation())
+			{
+				return;
+			}
+
+			try
+			{
+				if (prompted)
+				{
+					await ShowBalloonAsync("正在检测更新", "正在查询 npm 上的最新版本。");
+				}
+
+				var result = await _orchestrator.CheckForUpdateAsync();
+				_updateAvailable = result.UpdateAvailable;
+				await RefreshTrayIconAsync();
+
+				if (result.UpdateAvailable)
+				{
+					if (await ConfirmAsync(
+						"发现新版本",
+						$"当前版本：{result.InstalledVersion}\n最新版本：{result.LatestVersion}\n\n不会自动更新。是否现在手动更新？"))
+					{
+						await InstallOrUpdateCoreAsync(true, true);
+					}
+					else
+					{
+						await ShowInformationAsync("已保留当前版本", "需要时请从托盘菜单选择“更新 DSH”。");
+					}
+
+					return;
+				}
+
+				if (prompted)
+				{
+					await ShowInformationAsync("已是最新版本", $"当前 DSH 版本：{result.InstalledVersion ?? "未知"}");
+				}
+			}
+			catch (DshOperationException exception)
+			{
+				if (prompted)
+				{
+					await ShowErrorAsync("无法检测更新", exception.Message);
+				}
+				else
+				{
+					await ShowBalloonAsync("无法检测更新", "可稍后从托盘菜单重试。");
+				}
+			}
+			finally
+			{
+				EndOperation();
+			}
+		}
+
+		private static async Task InstallOrUpdateCoreAsync(bool isUpdate, bool alreadyBusy = false)
+		{
+			if (_orchestrator is null || (!alreadyBusy && !TryBeginOperation()))
+			{
+				return;
+			}
+
+			try
+			{
+				await ShowBalloonAsync(
+					isUpdate ? "正在更新 DSH" : "正在安装 DSH",
+					"这可能需要一两分钟，请稍候。");
+				await _orchestrator.InstallOrUpdateAsync();
+				_updateAvailable = false;
+				await RefreshTrayIconAsync();
+				await ShowInformationAsync(
+					isUpdate ? "更新完成" : "安装完成",
+					isUpdate
+						? $"DSH 已更新到 {_orchestrator.InstalledVersion ?? "最新版本"}。"
+						: "DSH 已安装到本地私有目录。现在可以从托盘打开面板。");
+				await StartDshAfterInstallAsync();
+			}
+			catch (DshOperationException exception)
+			{
+				await ShowErrorAsync(isUpdate ? "更新失败" : "安装失败", exception.Message);
+			}
+			finally
+			{
+				if (!alreadyBusy)
+				{
+					EndOperation();
+				}
+			}
+		}
+
+		private static bool TryBeginOperation()
+		{
+			if (_busy)
+			{
+				_ = ShowInformationAsync("请稍候", "当前已有安装、更新或启动正在进行。");
+				return false;
+			}
+
+			_busy = true;
+			return true;
+		}
+
+		private static void EndOperation()
+		{
+			_busy = false;
+			_ = RefreshTrayIconAsync();
+		}
+
+		private static Task ShowBalloonAsync(string title, string message) =>
+			InvokeOnUiAsync(() => _current?.ShowBalloon(title, message));
+
+		private static Task RefreshTrayIconAsync() =>
+			InvokeOnUiAsync(() => _current?.RefreshTrayIcon());
+
+		private static Task ShowInformationAsync(string heading, string message) =>
+			InvokeOnUiAsync(() => ShowInformation(heading, message));
+
+		private static Task ShowErrorAsync(string heading, string message) =>
+			InvokeOnUiAsync(() => ShowDshOperationError(heading, message));
+
+		private static Task ShowErrorAsync(string message) =>
+			ShowErrorAsync("无法完成操作", message);
+
+		private static Task<bool> ConfirmAsync(string heading, string message) =>
+			InvokeOnUiAsync(() => Confirm(heading, message));
+
+		private static Task InvokeOnUiAsync(Action action)
+		{
+			if (Environment.CurrentManagedThreadId == _uiThreadId || _current is null)
+			{
+				action();
+				return Task.CompletedTask;
+			}
+
+			var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+			_uiActions.Enqueue(() =>
+			{
+				try
+				{
+					action();
+					completion.TrySetResult();
+				}
+				catch (Exception exception)
+				{
+					completion.TrySetException(exception);
+				}
+			});
+
+			PostMessageW(_current._window.DangerousGetHandle(), _wmInvoke, 0, nint.Zero);
+			return completion.Task;
+		}
+
+		private static Task<T> InvokeOnUiAsync<T>(Func<T> action)
+		{
+			if (Environment.CurrentManagedThreadId == _uiThreadId || _current is null)
+			{
+				return Task.FromResult(action());
+			}
+
+			var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+			_uiActions.Enqueue(() =>
+			{
+				try
+				{
+					completion.TrySetResult(action());
+				}
+				catch (Exception exception)
+				{
+					completion.TrySetException(exception);
+				}
+			});
+
+			PostMessageW(_current._window.DangerousGetHandle(), _wmInvoke, 0, nint.Zero);
+			return completion.Task;
+		}
+
+		private static void DrainUiActions()
+		{
+			while (_uiActions.TryDequeue(out var action))
+			{
+				action();
 			}
 		}
 
@@ -385,22 +794,52 @@ internal static partial class Program
 
 		private static void ShowContextMenu(nint window)
 		{
-			if (_menu is null || !GetCursorPos(out var point))
+			if (!GetCursorPos(out var point))
 			{
 				return;
 			}
 
+			using var menu = CreatePopupMenu();
+			if (menu.IsInvalid)
+			{
+				return;
+			}
+
+			var installed = _orchestrator?.IsInstalled == true;
+			var running = _orchestrator?.IsRunning == true;
 			using var runKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
 			using var approvalKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run");
-			ModifyMenuW(
-				_menu,
-				_commandStartup,
-				_mfByCommand | _mfString,
+
+			if (_busy)
+			{
+				AppendMenuW(menu, _mfString | _mfGrayed, 0, "正在处理…");
+			}
+			else if (!installed)
+			{
+				AppendMenuW(menu, _mfString, _commandInstall, "安装 DSH");
+			}
+			else
+			{
+				AppendMenuW(
+					menu,
+					running ? _mfString | _mfGrayed : _mfString,
+					_commandMount,
+					running ? "DSH 运行中" : "启动 DSH");
+				AppendMenuW(menu, _mfString, _commandOpenPanel, "打开面板");
+				AppendMenuW(menu, _mfString, _commandCheckUpdate, "检测更新");
+				AppendMenuW(menu, _mfString, _commandUpdate, _updateAvailable ? "更新 DSH（有新版本）" : "更新 DSH");
+			}
+
+			AppendMenuW(menu, _mfSeparator, 0, string.Empty);
+			AppendMenuW(
+				menu,
+				_mfString,
 				_commandStartup,
 				IsStartupEnabled(runKey, approvalKey) ? "禁用开机启动" : "开机启动");
+			AppendMenuW(menu, _mfString, _commandExit, "退出");
 
 			SetForegroundWindow(window);
-			TrackPopupMenu(_menu, _tpmRightButton, point.x, point.y, 0, window, nint.Zero);
+			TrackPopupMenu(menu, _tpmRightButton, point.x, point.y, 0, window, nint.Zero);
 			PostMessageW(window, 0, 0, nint.Zero);
 		}
 	}
@@ -592,16 +1031,9 @@ internal static partial class Program
 	[return: MarshalAs(UnmanagedType.Bool)]
 	private static partial bool DestroyIcon(nint icon);
 
-	[LibraryImport("user32", EntryPoint = "ModifyMenuW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-	[return: MarshalAs(UnmanagedType.Bool)]
-	private static partial bool ModifyMenuW(SafeMenuHandle menu, nuint position, uint flags, nuint itemId, string itemText);
-
 	[LibraryImport("shell32", EntryPoint = "Shell_NotifyIconW", SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	private static partial bool ShellNotifyIconW(uint message, ref NotifyIconData iconData);
-
-	[LibraryImport("user32", EntryPoint = "MessageBoxW", StringMarshalling = StringMarshalling.Utf16)]
-	private static partial int MessageBoxW(nint window, string text, string caption, uint type);
 
 	[DllImport("comctl32", EntryPoint = "TaskDialogIndirect", CharSet = CharSet.Unicode)]
 	private static extern int TaskDialogIndirect(in TaskDialogConfig configuration, out int button, out int radioButton, out int verificationFlag);

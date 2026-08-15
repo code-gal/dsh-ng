@@ -10,8 +10,15 @@ internal sealed class AppConfiguration
     public int Port { get; init; }
 }
 
+internal sealed class PackageManifest
+{
+    [JsonPropertyName("version")]
+    public string? Version { get; init; }
+}
+
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(AppConfiguration))]
+[JsonSerializable(typeof(PackageManifest))]
 internal partial class AppJsonSerializerContext : JsonSerializerContext
 {
 }

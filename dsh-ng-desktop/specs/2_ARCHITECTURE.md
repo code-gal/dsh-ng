@@ -11,13 +11,15 @@
 | 文件名 | 职责划分 | 备注约束 |
 |---|---|---|
 | `Program.cs` / `TrayApp^` | 顶层启动流水线、托盘原生 UI 建立、系统退出钩子、自启挂载逻辑。 | 拒绝拖拽式 XAML，用纯 C# 直写。 |
-| `DshOrchestrator.cs` | Node 环境断言、跨进程 (ProcessStartInfo) `npm install` 包体下载、dsh 的后台创建与进程重定向。 | 必须是异步 (`async/await`) 且不可致 UI 卡顿。 |
+| `DshOrchestrator.cs` | Node 环境断言、安装状态探测、跨进程 `npm install` / `npm view`、dsh 的后台创建与进程重定向。 | 必须是异步 (`async/await`) 且不可致 UI 卡顿。安装与更新由 UI 显式触发；启动时只允许检测版本。 |
 | `Configuration.cs` | 强类型映射模型、端口的防冲突探测、向后的 `appsettings.json` IO 固化落地。 | 涉及 JSON 务必采用 Source Generator (AOT必须)。 |
 | `DshCleaner.cs` | **卸载专核**：剥离自启项，IO 强删下层目录，Temp 落盘自焚 `.bat` 的操作集成。 | 需要仔细处理权限与进程互斥锁定。 |
 
 ## 3. 跨进程 IPC 设计
 *   由于 NPM 指令（下载/更新）频率极低且时间较长，用传统的 `Process.Start` 把标准输出流用异步委托导回记录，是资源开销最低、兼容性最好的防线，远胜于强耦合去打内嵌 Node 脚本系统。
-*   主 dsh 进程也是长生命周期子进程，父进程 (桌面壳) 必须持有一个安全的句柄，并在 `AppDomain.CurrentDomain.ProcessExit` 等关键钩子期主动向其发送 `Kill()` 树状清剿，防止留下僵尸 Node。
+*   安装状态以私有目录 `node_modules/@deepseek-ai/dsh/package.json` 为准；最新版本用 `npm view @deepseek-ai/dsh version` 探测。比较只用于提示，升级必须走用户确认后的 `npm install`。
+*   长耗时 npm 操作期间，托盘气泡报告进度，完成后用 TaskDialog 报告成功或失败。
+*   主 dsh 进程也是长生命周期子进程，父进程 (桌面壳) 必须持有一个安全的句柄，并在 `AppDomain.CurrentDomain.ProcessExit` 等关键钩子期主动向其发送 `Kill()` 树状清剿，防止留下僵尸 Node。更新前必须先停掉该进程，避免文件锁。
 
 ## 4. 开发与代码规范 (Coding Standards)
 为保持项目强内聚并在 AI 协作中降低理解成本，必须严格遵循以下纪律：
