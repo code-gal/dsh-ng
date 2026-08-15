@@ -1,6 +1,6 @@
 # DeepSeek Harness (DSH) DIY 生态大仓库 (Monorepo)
 
-欢迎来到我的 DeepSeek Harness 私人 DIY 大仓。
+欢迎来到我的 DeepSeek Harness DIY 大仓库。
 
 DeepSeek Harness (dsh) 是一个一切皆插件、鼓励高度折腾的开源智能体引擎。本项目集合了我对其衍生出的扩展工具、桌面客户端代理、独立插件及自用规范指南。
 
