@@ -19,7 +19,8 @@ public sealed record SetupProgress(
     SetupStage Stage,
     string Title,
     string Detail,
-    bool IsTerminal = false);
+    bool IsTerminal = false,
+    bool IsHeartbeat = false);
 
 public sealed record SetupResult(
     bool Succeeded,

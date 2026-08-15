@@ -54,7 +54,7 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 
 - `Preflight` 检测 OS、架构、目录权限、Node、npx 和 WebView 前置条件。
 - 客户端文件在 `Committed` 前属于可回滚资源。
-- `ProvisioningDsh` 使用原生窗口展示阶段进度和实时日志；进度采用阶段完成度，不伪造下载百分比。
+- `ProvisioningDsh` 使用原生窗口展示单一主状态、单一已等待时长和经整理的实时摘要；npx 无稳定的进度 API，因此只显示“检查 DSH 更新”、实际下载/解压/安装所触发的“更新 DSH”和启动验证等可证明的阶段，不伪造下载百分比。摘要日志面板自动换行、紧凑呈现且可选择复制；仅当视图位于末尾且没有文本选择时才自动跟随新内容。
 - `WaitingForWebUi` 必须验证返回内容属于 DSH Web UI。
 - 自启动与系统卸载注册放在事务末尾；部分失败必须执行补偿操作。
 - 失败日志先供用户查看，退出安装器时再按失败清理策略处理。
@@ -68,7 +68,7 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 - 用户主动停止和外部边界产生的意外取消必须分别记录，但两者都必须进入 `Stopping -> RollingBack -> Failed` 并保留原生失败页；不得让 `OperationCanceledException` 从安装窗口的异步事件处理器逸出导致进程退出。
 - 回滚只接受本次部署记录和内存中的、已通过 `AppPaths` 校验的 `InstallManifest`。它先停止 Supervisor，再注销自启动与卸载入口，随后删除清单内目录和本次部署目录；不根据名称、PATH 或工作区内容扩展删除范围。
 - 回滚时保留安装日志供失败页查看；安装器退出后才删除该失败日志。失败日志本身不是可运行安装的一部分。
-- 启动新事务前，安装窗口检测现有产品状态并要求用户选择处理方式。有效安装清单证明其记录路径可安全处理；无清单但位于 `AppPaths` 精确受管路径内的数据视为中断残留。覆盖安装只允许 `IClientDeployment` 以同级备份目录原子替换 `InstallRoot`，并在失败回滚时恢复原目录；`DSH_HOME`、私有 npm cache、WebView 与日志均不得清理。全新安装仅在用户明确选择后，才可基于当前 `AppPaths` 生成仅用于清理的临时 `InstallManifest`，清理精确记录的路径后部署；安装器当前正在写入的日志始终保留到退出。无法验证的安装清单不得覆盖，只允许显式全新安装。
+- 启动新事务前，安装窗口检测现有产品状态并要求用户选择处理方式。有效安装清单证明其记录路径可安全处理；无清单但位于 `AppPaths` 精确受管路径内的数据视为中断残留。覆盖安装只允许 `IClientDeployment` 以同级备份目录原子替换 `InstallRoot`，并在失败回滚时恢复原目录；`DSH_HOME`、私有 npm cache、WebView 与日志均不得清理。全新安装仅在用户明确选择后，才可基于当前 `AppPaths` 生成仅用于清理的临时 `InstallManifest`，清理精确记录的路径后部署；安装器当前正在写入的日志始终保留到退出。`ProductDataCleaner` 以受管根目录为边界逐项后序删除，先移除只读属性并有限重试；符号链接和其他重解析点只删除链接本身、不进入其目标。无法验证的安装清单不得覆盖，只允许显式全新安装。
 - 安装界面通过只读位置服务打开已存在的 `InstallRoot`，或在部署前打开最近的现有父目录；该操作不得创建目录或改变事务状态。
 
 ## 5. DSH 运行环境
@@ -134,7 +134,8 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - `DshSupervisor` 是唯一允许创建和停止 DSH 进程的共享服务。调用方通过 `DshSupervisorOptions` 提供超时、重试和可替换的进程/HTTP 边界；生产默认值固定为未锁版本的 npx 命令。
 - 启动前以受限时的 `node --version` 与 `npx --version` 验证可执行文件。解析顺序遵循当前进程 `PATH`，Windows 同时支持 `.exe`、`.cmd` 和 `.bat`；不调用 npm 安装、不改写系统环境。
 - Supervisor 创建 `npm_config_cache`、`DSH_HOME` 和 `launcher-cwd` 后，以 `npx --yes @deepseek-ai/dsh web --host 127.0.0.1 --port <port>` 启动。子进程只继承必要环境，并固定工作目录为 `launcher-cwd`。
-- 默认 DSH 就绪等待覆盖首次 npx 供应所需的依赖下载，时长为十分钟且可由安装器的停止操作取消；就绪等待、超时和停止结果均写入运行日志。
+- 安装事务中的 DSH 就绪等待没有固定失败时限：它持续至健康检查成功、受管进程退出或安装器停止。Supervisor 定期发布心跳、健康检查状态和经归类的 npx 输出；安装窗口独占已等待时长显示，心跳不得重复改写主状态。npx 输出只能在可识别的下载、解压、安装或服务启动事件时更新用户界面，完整原始输出只写入运行日志。普通运行时启动可使用独立、受限的启动超时；等待、停止和进程退出结果均写入运行日志。
+- Supervisor 对 npx 的明确错误输出作保守归类：在更新检查阶段识别网络错误，在实际下载/解压/安装阶段识别更新失败；只在进程退出或健康检查最终失败后进入故障状态。故障快照携带可读错误类别，供主窗口和托盘共享显示；原始 stderr 不直接显示在 UI。
 - 端口选择依次尝试已持久化端口、3080 和临时保留的 loopback 端口。启动期间若端口被抢占或进程提前退出，释放候选并换端口重试；从不接管或终止未知监听者。
 - 健康检查同时验证 HTTP 成功、响应中的 DSH 页面特征以及所记录子进程仍存活。成功后持久化端口、PID、进程启动时间和实例标识；持久化状态仅用于诊断和下次优先选端口，不能构成对既有进程的所有权声明。
 - Windows 的受管进程加入专属 Job Object；macOS 的受管进程加入独立 process group。Windows 不向可能与调试宿主共享的控制台广播 Ctrl+Break；停止先使用安全的进程级优雅请求，超时后仅终止同一 Job Object/process group。绑定失败立即停止刚创建的子进程并报告启动失败。
@@ -176,10 +177,10 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 ### 6.4 运行时协调与资源销毁顺序
 
-- `ApplicationCoordinator` 是已安装客户端的唯一运行时编排者：它驱动 `Starting -> Ready -> Stopping -> Stopped` 状态，并订阅 `DshSupervisor` 故障通知；DSH 异常退出只切换为原生故障视图，不自动无限重启。
+- `ApplicationCoordinator` 是已安装客户端的唯一运行时编排者：它驱动 `Starting -> Ready -> Stopping -> Stopped` 状态，并转发 `DshSupervisor` 的可读启动活动与故障通知；DSH 异常退出只切换为原生故障视图，不自动无限重启。
 - 主窗口仅在 Coordinator 已收到健康检查成功的 loopback URI 后创建 `NativeWebView` 并导航。启动、停止和故障阶段只显示 Avalonia 原生视图；不订阅或改写网页导航、外部链接、脚本消息和资源请求。
 - `NativeWebView.EnvironmentRequested` 是唯一的浏览器环境配置点：Windows 创建并使用 `AppPaths.WebViewDataDirectory` 作为 WebView2 用户数据目录；macOS 设置固定的产品 `DataStoreIdentifier`。该目录或数据存储的删除仍只由安装清单清理流程执行。
-- 托盘图标由应用级 Avalonia `TrayIcon` 创建。Windows 图标点击和两个平台的原生菜单都可显示主窗口；“退出”先销毁 WebView，再停止 Coordinator 所拥有的 DSH，最后显式关闭 Avalonia 生命周期。
+- 托盘图标由应用级 Avalonia `TrayIcon` 创建。Windows 图标点击和两个平台的原生菜单都可显示主窗口；后台启动保持主窗口隐藏，并根据 Coordinator 快照更新托盘提示文本，避免弹窗打断登录；“退出”先销毁 WebView，再停止 Coordinator 所拥有的 DSH，最后显式关闭 Avalonia 生命周期。
 - 安装窗口在事务未结束时拦截窗口关闭，显示原生停止与回滚确认；提交成功后切换到同一进程内的主窗口，复用已验证的 Supervisor，不重复创建 DSH。
 
 ## 7. 平台发行
@@ -211,6 +212,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 - 安装日志和运行日志分离，包含阶段、时间、进程退出码、健康检查结果和平台错误。
 - UI 展示简短错误摘要并提供“打开日志位置”和“复制诊断信息”。
+- 安装 UI 维护独立的、有界摘要日志缓冲：保留阶段变化、下载/解析/启动/健康检查等可理解事件与必要警告，折叠依赖安装的逐行噪声；完整脱敏日志仍写入文件。新增摘要时不得覆盖用户正在选择的文本或改变其手动滚动位置。
 - 日志不得记录 API Key、认证令牌和完整敏感环境变量。
 - 日志采用大小与数量上限轮转，卸载时删除。
 

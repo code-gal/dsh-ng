@@ -113,12 +113,12 @@ public sealed class SetupCoordinator : IAsyncDisposable
             await _log.InformationAsync(AppLogStream.Installation, "setup-client-deployed", "客户端负载已复制到本次事务拥有的安装目录。", transactionToken)
                 .ConfigureAwait(false);
 
-            Transition(ApplicationState.ProvisioningDsh, SetupStage.ProvisioningDsh, "正在准备 DeepSeek Harness", "正在使用产品私有缓存和 DSH 主目录启动 npx。");
+            Transition(ApplicationState.ProvisioningDsh, SetupStage.ProvisioningDsh, "正在准备 DSH", "正在使用产品私有缓存和 DSH 主目录启动 npx。首次供应会持续等待至完成、进程退出或您手动停止。");
             // DshSupervisor validates both the npx launch and the Web UI. The
             // state changes before this call make the native progress view show
             // the two meaningful user-facing phases without faking download %.
-            Transition(ApplicationState.WaitingForWebUi, SetupStage.WaitingForWebUi, "正在等待本地 Web 界面", "正在下载并验证 DSH 页面；首次供应依赖可能需要数分钟，可随时停止安装。");
-            var started = await _dshSupervisor.StartAsync(transactionToken).ConfigureAwait(false);
+            Transition(ApplicationState.WaitingForWebUi, SetupStage.WaitingForWebUi, "正在检查 DSH 更新", "npx 正在检查 DSH 的本地缓存和可用版本；网络较慢时可继续等待，随时可以停止安装。");
+            var started = await StartDshForInstallationAsync(transactionToken).ConfigureAwait(false);
             if (!started.Succeeded)
             {
                 return await FailAndRollbackAsync(started.Detail, started.Remediation, wasCancelled: started.Failure == DshStartFailure.Cancelled)
@@ -447,8 +447,32 @@ public sealed class SetupCoordinator : IAsyncDisposable
         await Task.WhenAll(pending).ConfigureAwait(false);
     }
 
-    private void Publish(SetupStage stage, string title, string detail, bool isTerminal = false) =>
-        ProgressChanged?.Invoke(this, new SetupProgress(stage, title, detail, isTerminal));
+    private async Task<DshStartResult> StartDshForInstallationAsync(CancellationToken cancellationToken)
+    {
+        if (_dshSupervisor is not IDshInstallationProgressSource installationProgressSource)
+        {
+            return await _dshSupervisor.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        EventHandler<DshInstallationProgress> handler = (_, progress) =>
+            Publish(
+                SetupStage.WaitingForWebUi,
+                progress.Title,
+                progress.Detail,
+                isHeartbeat: progress.IsHeartbeat);
+        installationProgressSource.InstallationProgressChanged += handler;
+        try
+        {
+            return await installationProgressSource.StartForInstallationAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            installationProgressSource.InstallationProgressChanged -= handler;
+        }
+    }
+
+    private void Publish(SetupStage stage, string title, string detail, bool isTerminal = false, bool isHeartbeat = false) =>
+        ProgressChanged?.Invoke(this, new SetupProgress(stage, title, detail, isTerminal, isHeartbeat));
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 

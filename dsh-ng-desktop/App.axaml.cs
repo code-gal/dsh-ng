@@ -83,12 +83,15 @@ internal sealed class App : Application
 
         var setupWindow = desktop.MainWindow as SetupWindow;
         _desktopRuntime = bootstrap.CreateDesktopRuntime(StateMachine, setupRuntime);
+        _desktopRuntime.Coordinator.SnapshotChanged += Coordinator_OnSnapshotChanged;
         _mainWindow = new MainWindow(_desktopRuntime);
         SetTrayVisibility(true);
+        SetTrayToolTip("DSH Desktop — 正在启动 DSH");
 
         if (!background)
         {
             desktop.MainWindow = _mainWindow;
+            _mainWindow.ShowAndActivate();
         }
 
         if (setupWindow is not null)
@@ -109,13 +112,6 @@ internal sealed class App : Application
         await _desktopRuntime.Coordinator.StartAsync().ConfigureAwait(false);
         if (!background)
         {
-            await Dispatcher.UIThread.InvokeAsync(() =>
-            {
-                if (_mainWindow is { IsVisible: false })
-                {
-                    _mainWindow.ShowAndActivate();
-                }
-            });
             return;
         }
 
@@ -174,6 +170,7 @@ internal sealed class App : Application
 
         if (_desktopRuntime is not null)
         {
+            _desktopRuntime.Coordinator.SnapshotChanged -= Coordinator_OnSnapshotChanged;
             await _desktopRuntime.DisposeAsync().ConfigureAwait(true);
         }
 
@@ -195,6 +192,39 @@ internal sealed class App : Application
         {
             icon.IsVisible = visible;
         }
+    }
+
+    private void Coordinator_OnSnapshotChanged(object? sender, DesktopRuntimeSnapshot snapshot)
+    {
+        Dispatcher.UIThread.Post(() => SetTrayToolTip(DescribeTrayState(snapshot)));
+    }
+
+    private void SetTrayToolTip(string text)
+    {
+        var icons = TrayIcon.GetIcons(this);
+        if (icons is null)
+        {
+            return;
+        }
+
+        foreach (var icon in icons)
+        {
+            icon.ToolTipText = text;
+        }
+    }
+
+    private static string DescribeTrayState(DesktopRuntimeSnapshot snapshot)
+    {
+        var activity = snapshot.Status switch
+        {
+            DesktopRuntimeStatus.Starting => snapshot.ActivityTitle ?? "正在启动 DSH",
+            DesktopRuntimeStatus.Ready => "DSH 已就绪",
+            DesktopRuntimeStatus.Faulted => snapshot.ActivityTitle ?? "DSH 出现故障",
+            DesktopRuntimeStatus.Stopping => "正在停止 DSH",
+            DesktopRuntimeStatus.Stopped => "DSH 已停止",
+            _ => "正在启动 DSH"
+        };
+        return $"DSH Desktop — {activity}";
     }
 
     private void ConfigureTrayIcon()

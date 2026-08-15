@@ -32,20 +32,26 @@ public enum DshStartFailure
 public sealed record DshSupervisorSnapshot(
     DshSupervisorStatus Status,
     DshRuntimeState? RuntimeState,
-    string? Detail);
+    string? Detail,
+    string? ActivityTitle = null);
 
 public sealed record DshStartResult(
     bool Succeeded,
     DshStartFailure Failure,
     string Detail,
     string? Remediation,
-    DshRuntimeState? RuntimeState)
+    DshRuntimeState? RuntimeState,
+    string? ActivityTitle = null)
 {
     public static DshStartResult Success(DshRuntimeState runtimeState) =>
         new(true, DshStartFailure.None, "DSH Web UI is ready.", null, runtimeState);
 
-    public static DshStartResult Failed(DshStartFailure failure, string detail, string? remediation = null) =>
-        new(false, failure, detail, remediation, null);
+    public static DshStartResult Failed(
+        DshStartFailure failure,
+        string detail,
+        string? remediation = null,
+        string? activityTitle = null) =>
+        new(false, failure, detail, remediation, null, activityTitle);
 }
 
 public sealed record DshSupervisorOptions(
@@ -64,6 +70,17 @@ public sealed record DshSupervisorOptions(
         TimeSpan.FromSeconds(10),
         3);
 
+    /// <summary>
+    /// A null value intentionally means that the installer keeps waiting until
+    /// DSH is ready, exits, or the user cancels. First npx supply can take a
+    /// long time on slow networks, so it must not reuse normal-start timeout.
+    /// </summary>
+    public TimeSpan? InstallationStartupTimeout { get; init; }
+
+    public TimeSpan InstallationProgressInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    public TimeSpan LongWaitNoticeAfter { get; init; } = TimeSpan.FromMinutes(2);
+
     public void Validate()
     {
         if (PrerequisiteTimeout <= TimeSpan.Zero ||
@@ -71,6 +88,9 @@ public sealed record DshSupervisorOptions(
             HealthRequestTimeout <= TimeSpan.Zero ||
             HealthPollInterval <= TimeSpan.Zero ||
             GracefulStopTimeout <= TimeSpan.Zero ||
+            InstallationStartupTimeout is { } installationTimeout && installationTimeout <= TimeSpan.Zero ||
+            InstallationProgressInterval <= TimeSpan.Zero ||
+            LongWaitNoticeAfter <= TimeSpan.Zero ||
             MaximumPortAttempts is < 1 or > 10)
         {
             throw new ArgumentOutOfRangeException(nameof(DshSupervisorOptions), "Supervisor timeouts must be positive and port attempts must be between 1 and 10.");
@@ -133,6 +153,16 @@ public interface IDshProcessLauncher
 
 public sealed record DshHealthCheckResult(bool IsHealthy, string Detail);
 
+/// <summary>
+/// A compact, user-facing activity update for the setup window. Raw npx output
+/// continues to be recorded only in the runtime log.
+/// </summary>
+public sealed record DshInstallationProgress(
+    string Title,
+    string Detail,
+    TimeSpan Elapsed,
+    bool IsHeartbeat = false);
+
 public interface IDshHealthProbe
 {
     Task<DshHealthCheckResult> ProbeAsync(Uri endpoint, CancellationToken cancellationToken = default);
@@ -163,11 +193,22 @@ public interface IDshRuntimeSupervisor
 }
 
 /// <summary>
+/// Optional setup-specific contract that keeps the installer responsive during
+/// an unbounded first npx supply without widening the normal runtime contract.
+/// </summary>
+public interface IDshInstallationProgressSource
+{
+    event EventHandler<DshInstallationProgress>? InstallationProgressChanged;
+
+    Task<DshStartResult> StartForInstallationAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// The sole owner of DSH npx/Node process trees. It has injectable process,
 /// HTTP and port seams so supply and supervision can be verified without
 /// running a real DSH package in unit tests.
 /// </summary>
-public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
+public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgressSource, IAsyncDisposable
 {
     private readonly AppPaths _paths;
     private readonly IPlatformServices _platformServices;
@@ -185,9 +226,14 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
     private DshRuntimeState? _runtimeState;
     private DshSupervisorStatus _status = DshSupervisorStatus.Stopped;
     private string? _detail;
+    private string? _activityTitle;
+    private DshStartupFailureHint? _latestNpxFailure;
+    private DshStartupActivityRank _startupActivityRank;
     private long _generation;
     private bool _isStopping;
     private bool _disposed;
+
+    public event EventHandler<DshInstallationProgress>? InstallationProgressChanged;
 
     public DshSupervisor(
         AppPaths paths,
@@ -215,9 +261,25 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
 
     public event EventHandler<DshSupervisorSnapshot>? StateChanged;
 
-    public DshSupervisorSnapshot Snapshot => new(_status, _runtimeState, _detail);
+    public DshSupervisorSnapshot Snapshot => new(_status, _runtimeState, _detail, _activityTitle);
 
     public async Task<DshStartResult> StartAsync(CancellationToken cancellationToken = default)
+    {
+        return await StartWithPolicyAsync(
+                new DshStartupPolicy(_options.StartupTimeout, IsInstallation: false),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<DshStartResult> StartForInstallationAsync(CancellationToken cancellationToken = default)
+    {
+        return await StartWithPolicyAsync(
+                new DshStartupPolicy(_options.InstallationStartupTimeout, IsInstallation: true),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<DshStartResult> StartWithPolicyAsync(DshStartupPolicy startupPolicy, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -228,7 +290,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                 return DshStartResult.Success(_runtimeState);
             }
 
-            return await StartCoreAsync(cancellationToken).ConfigureAwait(false);
+            return await StartCoreAsync(startupPolicy, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -288,9 +350,19 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
         }
     }
 
-    private async Task<DshStartResult> StartCoreAsync(CancellationToken cancellationToken)
+    private async Task<DshStartResult> StartCoreAsync(DshStartupPolicy startupPolicy, CancellationToken cancellationToken)
     {
-        TransitionTo(DshSupervisorStatus.Starting, null, "Checking Node.js and npx prerequisites.");
+        _startupActivityRank = DshStartupActivityRank.Environment;
+        TransitionTo(
+            DshSupervisorStatus.Starting,
+            null,
+            "正在确认系统 Node.js 和 npx 可用。",
+            "正在检查 DSH 运行环境");
+        PublishInstallationProgress(
+            startupPolicy,
+            "正在检查 DSH 运行环境",
+            "正在确认系统 Node.js 和 npx 可用。",
+            TimeSpan.Zero);
         DshExecutableValidationResult executables;
         try
         {
@@ -322,6 +394,12 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             Directory.CreateDirectory(_paths.NpmCacheDirectory);
             Directory.CreateDirectory(_paths.DshHomeDirectory);
             Directory.CreateDirectory(_paths.LauncherWorkingDirectory);
+            ReportStartupActivity(
+                startupPolicy,
+                new DshStartupActivity(
+                    DshStartupActivityRank.UpdateCheck,
+                    "正在检查 DSH 更新",
+                    "正在通过 npx 检查 DSH 的本地缓存和可用版本。"));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -359,7 +437,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             excludedPorts.Add(port);
             await reservation.DisposeAsync().ConfigureAwait(false);
 
-            var started = await TryStartOnPortAsync(executables.Npx.ExecutablePath!, port, cancellationToken).ConfigureAwait(false);
+            var started = await TryStartOnPortAsync(executables.Npx.ExecutablePath!, port, startupPolicy, cancellationToken).ConfigureAwait(false);
             if (started.Succeeded)
             {
                 return started;
@@ -377,7 +455,13 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
 
         if (lastFailure is not null)
         {
-            return await FailStartAsync(lastFailure.Failure, lastFailure.Detail, lastFailure.Remediation, cancellationToken).ConfigureAwait(false);
+            return await FailStartAsync(
+                    lastFailure.Failure,
+                    lastFailure.Detail,
+                    lastFailure.Remediation,
+                    cancellationToken,
+                    lastFailure.ActivityTitle)
+                .ConfigureAwait(false);
         }
 
         return await FailStartAsync(
@@ -387,10 +471,15 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<DshStartResult> TryStartOnPortAsync(string npxExecutable, int port, CancellationToken cancellationToken)
+    private async Task<DshStartResult> TryStartOnPortAsync(
+        string npxExecutable,
+        int port,
+        DshStartupPolicy startupPolicy,
+        CancellationToken cancellationToken)
     {
         IDshProcessHandle? process = null;
         IPlatformProcessGroup? processGroup = null;
+        _latestNpxFailure = null;
         try
         {
             process = await _processLauncher.LaunchAsync(
@@ -399,7 +488,11 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                     port,
                     _paths.LauncherWorkingDirectory,
                     BuildDshEnvironment(),
-                    (line, isError) => _ = WriteProcessOutputAsync(line, isError)),
+                    (line, isError) =>
+                    {
+                        _ = WriteProcessOutputAsync(line, isError);
+                        HandleProcessOutput(startupPolicy, line, isError);
+                    }),
                 cancellationToken).ConfigureAwait(false);
 
             processGroup = _platformServices.CreateProcessGroup();
@@ -421,19 +514,26 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                 var exitCode = process.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown";
                 await processGroup.DisposeAsync().ConfigureAwait(false);
                 await process.DisposeAsync().ConfigureAwait(false);
-                return DshStartResult.Failed(
-                    DshStartFailure.Launch,
-                    $"DSH exited before its Web UI became ready (exit code {exitCode}).",
-                    "Inspect the runtime log, then verify Node.js and the local network policy.");
+                return CreateProcessExitFailure(exitCode);
             }
 
+            var waitDescription = startupPolicy.Timeout is { } timeout
+                ? $"Waiting up to {timeout.TotalMinutes:0} minutes for the DSH Web UI at http://127.0.0.1:{port}/."
+                : $"Waiting without a fixed timeout for the DSH Web UI at http://127.0.0.1:{port}/; the installer can be stopped at any time.";
             await _log.InformationAsync(
                     AppLogStream.Runtime,
                     "dsh-health-wait",
-                    $"Waiting up to {_options.StartupTimeout.TotalMinutes:0} minutes for the DSH Web UI at http://127.0.0.1:{port}/.",
+                    waitDescription,
                     cancellationToken)
                 .ConfigureAwait(false);
-            var ready = await WaitForHealthyWebUiAsync(process, port, cancellationToken).ConfigureAwait(false);
+            _latestNpxFailure = null;
+            ReportStartupActivity(
+                startupPolicy,
+                new DshStartupActivity(
+                    DshStartupActivityRank.StartingService,
+                    "正在启动 DSH 服务",
+                    "正在等待 DSH 本地服务响应。"));
+            var ready = await WaitForHealthyWebUiAsync(process, port, startupPolicy, cancellationToken).ConfigureAwait(false);
             if (!ready.IsHealthy)
             {
                 await _log.WarningAsync(
@@ -445,10 +545,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                 await StopOwnedProcessAsync(process, processGroup, CancellationToken.None).ConfigureAwait(false);
                 await processGroup.DisposeAsync().ConfigureAwait(false);
                 await process.DisposeAsync().ConfigureAwait(false);
-                return DshStartResult.Failed(
-                    DshStartFailure.HealthCheck,
-                    ready.Detail,
-                    "Inspect the runtime log and retry. DSH Desktop did not claim or stop unrelated loopback services.");
+                return CreateHealthCheckFailure(ready);
             }
 
             var runtimeState = new DshRuntimeState(
@@ -505,17 +602,25 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             return DshStartResult.Failed(
                 DshStartFailure.Launch,
                 $"DSH could not start on loopback port {port}: {exception.Message}",
-                "Inspect the runtime log and retry. No unrelated Node process was changed.");
+                "Inspect the runtime log and retry. No unrelated Node process was changed.",
+                "DSH 启动失败");
         }
     }
 
-    private async Task<DshHealthCheckResult> WaitForHealthyWebUiAsync(IDshProcessHandle process, int port, CancellationToken cancellationToken)
+    private async Task<DshHealthCheckResult> WaitForHealthyWebUiAsync(
+        IDshProcessHandle process,
+        int port,
+        DshStartupPolicy startupPolicy,
+        CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + _options.StartupTimeout;
+        var startedAt = DateTimeOffset.UtcNow;
+        var deadline = startupPolicy.Timeout is { } timeout ? startedAt + timeout : (DateTimeOffset?)null;
+        var nextProgressAt = startedAt;
+        var lastLoggedMinute = -1L;
         var endpoint = new Uri($"http://127.0.0.1:{port}/", UriKind.Absolute);
-        var lastFailure = "等待 DSH Web 界面启动超时。";
+        var lastFailure = "DSH Web 界面仍在启动。";
 
-        while (DateTimeOffset.UtcNow < deadline)
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (process.HasExited)
@@ -543,10 +648,36 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                 lastFailure = "DSH Web 界面未能在健康检查时限内响应。";
             }
 
+            var now = DateTimeOffset.UtcNow;
+            var elapsed = now - startedAt;
+            if (startupPolicy.IsInstallation && now >= nextProgressAt)
+            {
+                var waitingDetail = elapsed >= _options.LongWaitNoticeAfter
+                    ? "DSH 仍在启动；网络较慢时可继续等待或停止安装。"
+                    : "DSH 正在启动并验证本地 Web 界面。";
+                PublishInstallationProgress(startupPolicy, "正在启动 DSH 服务", waitingDetail, elapsed, isHeartbeat: true);
+                nextProgressAt = now + _options.InstallationProgressInterval;
+            }
+
+            var elapsedMinutes = (long)elapsed.TotalMinutes;
+            if (elapsedMinutes > 0 && elapsedMinutes != lastLoggedMinute)
+            {
+                lastLoggedMinute = elapsedMinutes;
+                await _log.InformationAsync(
+                        AppLogStream.Runtime,
+                        "dsh-health-waiting",
+                        $"DSH Web UI is still starting after {FormatElapsed(elapsed)}: {lastFailure}",
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            if (deadline is { } timeoutAt && now >= timeoutAt)
+            {
+                return new DshHealthCheckResult(false, lastFailure);
+            }
+
             await Task.Delay(_options.HealthPollInterval, cancellationToken).ConfigureAwait(false);
         }
-
-        return new DshHealthCheckResult(false, lastFailure);
     }
 
     private async Task<ILoopbackPortReservation?> ReservePortAsync(int? preferredPort, ISet<int> excludedPorts, CancellationToken cancellationToken)
@@ -670,12 +801,54 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
         }
     }
 
-    private async Task<DshStartResult> FailStartAsync(DshStartFailure failure, string detail, string? remediation, CancellationToken cancellationToken)
+    private DshStartResult CreateProcessExitFailure(string exitCode)
+    {
+        if (_latestNpxFailure is { } failure)
+        {
+            return DshStartResult.Failed(
+                DshStartFailure.Launch,
+                $"{failure.Detail}（npx 退出代码 {exitCode}）。",
+                failure.Remediation,
+                failure.Title);
+        }
+
+        return DshStartResult.Failed(
+            DshStartFailure.Launch,
+            $"DSH 在其 Web 界面就绪前退出（退出代码 {exitCode}）。",
+            "请打开运行日志，检查 Node.js、npx 和本地网络策略后重试。",
+            "DSH 启动失败");
+    }
+
+    private DshStartResult CreateHealthCheckFailure(DshHealthCheckResult healthResult)
+    {
+        if (_latestNpxFailure is { } failure)
+        {
+            return DshStartResult.Failed(
+                DshStartFailure.Launch,
+                failure.Detail,
+                failure.Remediation,
+                failure.Title);
+        }
+
+        return DshStartResult.Failed(
+            DshStartFailure.HealthCheck,
+            healthResult.Detail,
+            "Inspect the runtime log and retry. DSH Desktop did not claim or stop unrelated loopback services.",
+            "DSH 启动失败");
+    }
+
+    private async Task<DshStartResult> FailStartAsync(
+        DshStartFailure failure,
+        string detail,
+        string? remediation,
+        CancellationToken cancellationToken,
+        string? activityTitle = null)
     {
         _runtimeState = null;
-        TransitionTo(DshSupervisorStatus.Faulted, null, detail);
+        var title = activityTitle ?? "DSH 启动失败";
+        TransitionTo(DshSupervisorStatus.Faulted, null, detail, title);
         await _log.ErrorAsync(AppLogStream.Runtime, "dsh-start-failed", detail, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return DshStartResult.Failed(failure, detail, remediation);
+        return DshStartResult.Failed(failure, detail, remediation, title);
     }
 
     private async Task HandleProcessExitedAsync(IDshProcessHandle process, long generation)
@@ -696,7 +869,11 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
                 _processGroup = null;
                 _runtimeState = null;
                 await _runtimeStateStore.RemoveAsync().ConfigureAwait(false);
-                TransitionTo(DshSupervisorStatus.Faulted, null, $"DSH exited unexpectedly (exit code {exitCode}).");
+                TransitionTo(
+                    DshSupervisorStatus.Faulted,
+                    null,
+                    $"DSH exited unexpectedly (exit code {exitCode}).",
+                    "DSH 运行异常");
                 await _log.ErrorAsync(AppLogStream.Runtime, "dsh-exited", $"The owned DSH process exited unexpectedly with code {exitCode}.").ConfigureAwait(false);
                 if (processGroup is not null)
                 {
@@ -740,17 +917,183 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
         }
     }
 
+    private void PublishInstallationProgress(
+        DshStartupPolicy startupPolicy,
+        string title,
+        string detail,
+        TimeSpan elapsed,
+        bool isHeartbeat = false)
+    {
+        if (!startupPolicy.IsInstallation)
+        {
+            return;
+        }
+
+        InstallationProgressChanged?.Invoke(this, new DshInstallationProgress(title, detail, elapsed, isHeartbeat));
+    }
+
+    private void HandleProcessOutput(DshStartupPolicy startupPolicy, string line, bool isError)
+    {
+        if (ClassifyProcessFailure(line, isError) is { } failure)
+        {
+            _latestNpxFailure = failure;
+            ReportStartupActivity(
+                startupPolicy,
+                new DshStartupActivity(_startupActivityRank, failure.Title, failure.Detail));
+            return;
+        }
+
+        if (ClassifyProcessOutput(line) is { } activity)
+        {
+            if (activity.Rank == DshStartupActivityRank.StartingService)
+            {
+                _latestNpxFailure = null;
+            }
+
+            ReportStartupActivity(startupPolicy, activity);
+        }
+    }
+
+    private void ReportStartupActivity(DshStartupPolicy startupPolicy, DshStartupActivity activity)
+    {
+        if (_status != DshSupervisorStatus.Starting || activity.Rank < _startupActivityRank)
+        {
+            return;
+        }
+
+        if (activity.Rank == _startupActivityRank &&
+            string.Equals(_activityTitle, activity.Title, StringComparison.Ordinal) &&
+            string.Equals(_detail, activity.Detail, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _startupActivityRank = activity.Rank;
+        TransitionTo(DshSupervisorStatus.Starting, null, activity.Detail, activity.Title);
+        PublishInstallationProgress(startupPolicy, activity.Title, activity.Detail, TimeSpan.Zero);
+    }
+
+    private DshStartupFailureHint? ClassifyProcessFailure(string line, bool isError)
+    {
+        if (_status != DshSupervisorStatus.Starting || !isError)
+        {
+            return null;
+        }
+
+        var normalized = line.Trim().ToLowerInvariant();
+        var isErrorMessage = normalized.Contains("npm err", StringComparison.Ordinal) ||
+                             normalized.Contains("error", StringComparison.Ordinal) ||
+                             normalized.Contains("failed", StringComparison.Ordinal);
+        if (!isErrorMessage)
+        {
+            return null;
+        }
+
+        var isNetworkError = normalized.Contains("eai_again", StringComparison.Ordinal) ||
+                             normalized.Contains("enotfound", StringComparison.Ordinal) ||
+                             normalized.Contains("etimedout", StringComparison.Ordinal) ||
+                             normalized.Contains("econnreset", StringComparison.Ordinal) ||
+                             normalized.Contains("econnrefused", StringComparison.Ordinal) ||
+                             normalized.Contains("network", StringComparison.Ordinal) ||
+                             normalized.Contains("fetch failed", StringComparison.Ordinal);
+        if (isNetworkError && _startupActivityRank == DshStartupActivityRank.UpdateCheck)
+        {
+            return new DshStartupFailureHint(
+                "检查 DSH 更新时网络错误",
+                "无法连接 npm registry，请检查网络、代理或 npm registry 配置。",
+                "检查网络、代理或 npm registry 配置后重试。");
+        }
+
+        if (_startupActivityRank == DshStartupActivityRank.Updating)
+        {
+            return new DshStartupFailureHint(
+                "更新 DSH 失败",
+                "npx 无法下载或安装 DSH 依赖。",
+                "打开运行日志检查 npm 错误后重试。");
+        }
+
+        if (_startupActivityRank == DshStartupActivityRank.UpdateCheck)
+        {
+            return new DshStartupFailureHint(
+                "检查 DSH 更新失败",
+                "npx 无法完成 DSH 更新检查。",
+                "打开运行日志检查 npm 错误后重试。");
+        }
+
+        return new DshStartupFailureHint(
+            "DSH 启动失败",
+            "DSH 启动过程报告错误。",
+            "打开运行日志检查 DSH 错误后重试。");
+    }
+
+    private static DshStartupActivity? ClassifyProcessOutput(string line)
+    {
+        var normalized = line.Trim().ToLowerInvariant();
+        if (normalized.Contains("fetch", StringComparison.Ordinal) ||
+            normalized.Contains("download", StringComparison.Ordinal) ||
+            normalized.Contains("tarball", StringComparison.Ordinal))
+        {
+            return new DshStartupActivity(
+                DshStartupActivityRank.Updating,
+                "正在更新 DSH",
+                "正在下载 DSH 及其依赖。");
+        }
+
+        if (normalized.Contains("extract", StringComparison.Ordinal) ||
+            normalized.Contains("unpack", StringComparison.Ordinal))
+        {
+            return new DshStartupActivity(
+                DshStartupActivityRank.Updating,
+                "正在更新 DSH",
+                "正在解压 DSH 依赖。");
+        }
+
+        if (normalized.Contains("install", StringComparison.Ordinal) ||
+            normalized.Contains("added", StringComparison.Ordinal) ||
+            normalized.Contains("resolve", StringComparison.Ordinal))
+        {
+            return new DshStartupActivity(
+                DshStartupActivityRank.Updating,
+                "正在更新 DSH",
+                "正在解析并安装 DSH 依赖。");
+        }
+
+        if (normalized.Contains("listen", StringComparison.Ordinal) ||
+            normalized.Contains("server", StringComparison.Ordinal) ||
+            normalized.Contains("localhost", StringComparison.Ordinal))
+        {
+            return new DshStartupActivity(
+                DshStartupActivityRank.StartingService,
+                "正在启动 DSH 服务",
+                "DSH 服务已启动，正在验证本地 Web 界面。");
+        }
+
+        return null;
+    }
+
+    private static string FormatElapsed(TimeSpan elapsed) =>
+        elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours} 小时 {elapsed.Minutes} 分钟"
+            : elapsed.TotalMinutes >= 1
+                ? $"{elapsed.Minutes} 分钟 {elapsed.Seconds} 秒"
+                : $"{Math.Max(0, elapsed.Seconds)} 秒";
+
     private Task WriteProcessOutputAsync(string line, bool isError) =>
         isError
             ? _log.WarningAsync(AppLogStream.Runtime, "dsh-process-stderr", line)
             : _log.InformationAsync(AppLogStream.Runtime, "dsh-process-stdout", line);
 
-    private void TransitionTo(DshSupervisorStatus status, DshRuntimeState? runtimeState, string? detail)
+    private void TransitionTo(
+        DshSupervisorStatus status,
+        DshRuntimeState? runtimeState,
+        string? detail,
+        string? activityTitle = null)
     {
         _status = status;
         _runtimeState = runtimeState;
         _detail = detail;
-        StateChanged?.Invoke(this, new DshSupervisorSnapshot(status, runtimeState, detail));
+        _activityTitle = activityTitle;
+        StateChanged?.Invoke(this, new DshSupervisorSnapshot(status, runtimeState, detail, activityTitle));
     }
 
     private void ThrowIfDisposed()
@@ -784,6 +1127,26 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IAsyncDisposable
             }
         }
     }
+
+    private sealed record DshStartupPolicy(TimeSpan? Timeout, bool IsInstallation);
+
+    private enum DshStartupActivityRank
+    {
+        Environment,
+        UpdateCheck,
+        Updating,
+        StartingService
+    }
+
+    private sealed record DshStartupActivity(
+        DshStartupActivityRank Rank,
+        string Title,
+        string Detail);
+
+    private sealed record DshStartupFailureHint(
+        string Title,
+        string Detail,
+        string Remediation);
 }
 
 public sealed class SystemDshExecutableValidator : IDshExecutableValidator

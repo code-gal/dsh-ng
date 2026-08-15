@@ -16,7 +16,8 @@ public sealed record DesktopRuntimeSnapshot(
     DesktopRuntimeStatus Status,
     Uri? WebUiUri,
     string Detail,
-    string? Remediation = null);
+    string? Remediation = null,
+    string? ActivityTitle = null);
 
 /// <summary>
 /// Owns the installed application's runtime state. UI code observes its
@@ -46,7 +47,7 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
     public DesktopRuntimeSnapshot Snapshot { get; private set; } = new(
         DesktopRuntimeStatus.Stopped,
         null,
-        "DSH Desktop has not started its local runtime.");
+        "DSH Desktop 尚未启动本地服务。");
 
     public ApplicationStateSnapshot ApplicationState => _stateMachine.Snapshot;
 
@@ -88,7 +89,8 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
                 DesktopRuntimeStatus.Faulted,
                 null,
                 $"DSH Desktop could not stop cleanly: {exception.Message}",
-                "Inspect the runtime log before retrying or uninstalling."));
+                "Inspect the runtime log before retrying or uninstalling.",
+                "DSH 停止失败"));
         }
         finally
         {
@@ -108,12 +110,13 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
             }
 
             TransitionToStarting(isRetry
-                ? "Retrying the local DSH runtime after a user request."
-                : "Starting the local DSH runtime.");
+                ? "用户请求重试 DSH 启动。"
+                : "正在启动本地 DSH 服务。");
             Publish(new DesktopRuntimeSnapshot(
                 DesktopRuntimeStatus.Starting,
                 null,
-                isRetry ? "Retrying the local DSH runtime." : "Starting the local DSH runtime."));
+                isRetry ? "正在重试 DSH 启动。" : "正在启动本地 DSH 服务。",
+                ActivityTitle: "正在启动 DSH"));
 
             var result = await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
             if (result.Succeeded && result.RuntimeState is { } runtimeState)
@@ -122,7 +125,7 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
                 var ready = new DesktopRuntimeSnapshot(
                     DesktopRuntimeStatus.Ready,
                     CreateWebUiUri(runtimeState),
-                    "DSH Web UI is ready.");
+                    "DSH Web 界面已就绪。");
                 Publish(ready);
                 return ready;
             }
@@ -131,7 +134,8 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
                 DesktopRuntimeStatus.Faulted,
                 null,
                 result.Detail,
-                result.Remediation ?? "Inspect the runtime log and retry.");
+                result.Remediation ?? "Inspect the runtime log and retry.",
+                result.ActivityTitle ?? "DSH 启动失败");
             _stateMachine.TryTransitionTo(global::DshNgDesktop.Core.ApplicationState.Failed, result.Detail, out _);
             Publish(failure);
             return failure;
@@ -141,8 +145,9 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
             var cancelled = new DesktopRuntimeSnapshot(
                 DesktopRuntimeStatus.Faulted,
                 null,
-                "DSH startup was cancelled.",
-                "Retry starting DSH Desktop when ready.");
+                "DSH 启动已取消。",
+                "请在准备好后重试启动 DSH Desktop。",
+                "DSH 启动已取消");
             _stateMachine.TryTransitionTo(global::DshNgDesktop.Core.ApplicationState.Failed, cancelled.Detail, out _);
             Publish(cancelled);
             return cancelled;
@@ -155,7 +160,22 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
 
     private void Supervisor_OnStateChanged(object? sender, DshSupervisorSnapshot snapshot)
     {
-        if (_disposed || snapshot.Status != DshSupervisorStatus.Faulted)
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (snapshot.Status == DshSupervisorStatus.Starting && Snapshot.Status == DesktopRuntimeStatus.Starting)
+        {
+            Publish(new DesktopRuntimeSnapshot(
+                DesktopRuntimeStatus.Starting,
+                null,
+                snapshot.Detail ?? "正在启动本地 DSH 服务。",
+                ActivityTitle: snapshot.ActivityTitle ?? "正在启动 DSH"));
+            return;
+        }
+
+        if (snapshot.Status != DshSupervisorStatus.Faulted)
         {
             return;
         }
@@ -166,7 +186,8 @@ public sealed class ApplicationCoordinator : IAsyncDisposable
             DesktopRuntimeStatus.Faulted,
             null,
             detail,
-            "Inspect the runtime log and retry. DSH Desktop did not restart DSH automatically."));
+            "Inspect the runtime log and retry. DSH Desktop did not restart DSH automatically.",
+            snapshot.ActivityTitle ?? "DSH 运行异常"));
     }
 
     private void TransitionToStarting(string reason)

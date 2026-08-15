@@ -2,13 +2,13 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="DshNgDesktop.Views.SetupWindow"
         Title="安装 DSH Desktop"
-        Width="680"
-        Height="510"
-        MinWidth="580"
-        MinHeight="440"
+        Width="760"
+        Height="620"
+        MinWidth="620"
+        MinHeight="500"
         WindowStartupLocation="CenterScreen"
-        CanResize="False">
-  <Grid Margin="36" RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="16">
+        CanResize="True">
+  <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="14">
     <StackPanel Spacing="4">
       <TextBlock Text="DSH Desktop" FontSize="28" FontWeight="SemiBold" />
       <TextBlock Text="正在安装桌面客户端及其独立的 DeepSeek Harness 运行环境。" Opacity="0.72" TextWrapping="Wrap" />
@@ -17,13 +17,30 @@
     <StackPanel Grid.Row="1" Spacing="5">
       <TextBlock x:Name="StageText" FontSize="18" FontWeight="SemiBold" Text="正在准备安装" />
       <TextBlock x:Name="DetailText" Opacity="0.78" TextWrapping="Wrap" />
+      <TextBlock x:Name="ElapsedText" IsVisible="False" FontSize="12" Opacity="0.64" />
       <ProgressBar x:Name="StageProgress" IsIndeterminate="True" Height="6" Margin="0,8,0,0" />
     </StackPanel>
 
     <TextBlock x:Name="RemediationText" Grid.Row="2" IsVisible="False" TextWrapping="Wrap" Foreground="{DynamicResource SystemControlErrorTextForegroundBrush}" />
 
     <Border Grid.Row="3" BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}" BorderThickness="1" CornerRadius="4" Padding="10">
-      <ListBox x:Name="LogSummary" BorderThickness="0" Background="Transparent" IsHitTestVisible="False" />
+      <Grid RowDefinitions="Auto,*" RowSpacing="6">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="安装摘要" FontWeight="SemiBold" />
+          <TextBlock x:Name="LogFollowHint" Grid.Column="1" IsVisible="False" FontSize="12" Opacity="0.66" Text="已暂停自动跟随，可选择并复制文本" />
+        </Grid>
+        <ScrollViewer x:Name="LogSummaryScroller"
+                      Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      ScrollChanged="LogSummaryScroller_OnScrollChanged">
+          <SelectableTextBlock x:Name="LogSummary"
+                               TextWrapping="Wrap"
+                               FontSize="12"
+                               LineHeight="16"
+                               PointerPressed="LogSummary_OnPointerPressed" />
+        </ScrollViewer>
+      </Grid>
     </Border>
 
     <WrapPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
@@ -34,6 +51,7 @@
       </WrapPanel.Styles>
       <Button x:Name="CopyDiagnosticsButton" Click="CopyDiagnosticsButton_OnClick">复制诊断信息</Button>
       <Button x:Name="OpenLogsButton" Click="OpenLogsButton_OnClick">打开日志目录</Button>
+      <Button x:Name="FollowLogButton" Click="FollowLogButton_OnClick">显示最新日志</Button>
       <Button x:Name="OpenInstallLocationButton" Click="OpenInstallLocationButton_OnClick">打开安装位置</Button>
       <Button x:Name="PreserveDataButton" IsVisible="False" Click="PreserveDataButton_OnClick">覆盖安装（保留数据）</Button>
       <Button x:Name="FreshInstallButton" IsVisible="False" Click="FreshInstallButton_OnClick">全新安装（清理数据）</Button>

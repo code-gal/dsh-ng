@@ -68,7 +68,7 @@ internal static class Program
             .WithInterFont()
             .LogToTrace();
 
-    private static void RunDoctor(string[] args)
+    private static void RunDoctor(string[] arg)
     {
         var paths = AppPaths.CreateDefault();
         var doctor = new EnvironmentDoctor(paths, PlatformServices.CreateDefault());

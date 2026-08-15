@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using DshNgDesktop.Infrastructure;
@@ -12,10 +13,17 @@ public partial class SetupWindow : Window
     private SetupResult? _result;
     private bool _stopRequested;
     private bool _installationStarted;
+    private readonly List<string> _summaryLines = [];
+    private readonly DispatcherTimer _waitTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private DateTimeOffset? _webUiWaitStartedAt;
+    private bool _followLogTail = true;
+    private bool _updatingLogScroll;
+    private string? _lastSummaryLine;
 
     public SetupWindow()
     {
         InitializeComponent();
+        _waitTimer.Tick += WaitTimer_OnTick;
     }
 
     public SetupWindow(SetupRuntime runtime)
@@ -72,12 +80,29 @@ public partial class SetupWindow : Window
 
     private void ShowProgress(SetupProgress progress)
     {
-        StageText.Text = progress.Title;
-        DetailText.Text = progress.Detail;
-        LogSummary.Items.Add($"{DateTime.Now:T}  {progress.Title}: {progress.Detail}");
-        while (LogSummary.Items.Count > 8)
+        if (!progress.IsHeartbeat)
         {
-            LogSummary.Items.RemoveAt(0);
+            StageText.Text = progress.Title;
+            DetailText.Text = progress.Detail;
+        }
+
+        if (progress.Stage == SetupStage.WaitingForWebUi && !_stopRequested)
+        {
+            _webUiWaitStartedAt ??= DateTimeOffset.UtcNow;
+            ElapsedText.IsVisible = true;
+            _waitTimer.Start();
+            UpdateWaitElapsedText();
+        }
+        else
+        {
+            StopWaitTimer();
+        }
+
+        var summaryLine = $"{progress.Title}: {progress.Detail}";
+        if (!progress.IsHeartbeat && !string.Equals(_lastSummaryLine, summaryLine, StringComparison.Ordinal))
+        {
+            _lastSummaryLine = summaryLine;
+            AppendSummaryLine(summaryLine);
         }
     }
 
@@ -86,6 +111,7 @@ public partial class SetupWindow : Window
         _result = result;
         StageProgress.IsIndeterminate = false;
         StageProgress.Value = 100;
+        StopWaitTimer();
         StopButton.IsVisible = false;
         PreserveDataButton.IsVisible = false;
         FreshInstallButton.IsVisible = false;
@@ -155,11 +181,38 @@ public partial class SetupWindow : Window
         }
 
         _stopRequested = true;
+        StopWaitTimer();
         ContinueButton.IsVisible = false;
         StopButton.IsEnabled = false;
         StageText.Text = "正在停止安装";
         DetailText.Text = "正在取消事务并回滚本次安装创建的产品资源。";
         Runtime.Coordinator.RequestStop();
+    }
+
+    private void LogSummary_OnPointerPressed(object? sender, PointerPressedEventArgs eventArgs)
+    {
+        _followLogTail = false;
+        UpdateLogFollowHint();
+    }
+
+    private void LogSummaryScroller_OnScrollChanged(object? sender, ScrollChangedEventArgs eventArgs)
+    {
+        if (_updatingLogScroll)
+        {
+            return;
+        }
+
+        _followLogTail = IsLogAtEnd();
+        UpdateLogFollowHint();
+    }
+
+    private void FollowLogButton_OnClick(object? sender, RoutedEventArgs eventArgs)
+    {
+        _followLogTail = true;
+        LogSummary.ClearSelection();
+        RefreshSummaryLog();
+        ScrollSummaryToEnd();
+        UpdateLogFollowHint();
     }
 
     private void ContinueButton_OnClick(object? sender, RoutedEventArgs eventArgs)
@@ -229,11 +282,76 @@ public partial class SetupWindow : Window
 
     private void SetupWindow_OnClosed(object? sender, EventArgs eventArgs)
     {
+        _waitTimer.Stop();
         Runtime.Coordinator.ProgressChanged -= Coordinator_OnProgressChanged;
         Closing -= SetupWindow_OnClosing;
         if (_result is { Succeeded: false })
         {
             _ = Runtime.Coordinator.FinalizeFailedInstallationAsync();
         }
+    }
+
+    private void AppendSummaryLine(string line)
+    {
+        _summaryLines.Add($"{DateTime.Now:HH:mm:ss}  {line}");
+        while (_summaryLines.Count > 250)
+        {
+            _summaryLines.RemoveAt(0);
+        }
+
+        if (!_followLogTail)
+        {
+            UpdateLogFollowHint();
+            return;
+        }
+
+        RefreshSummaryLog();
+        ScrollSummaryToEnd();
+    }
+
+    private void RefreshSummaryLog() => LogSummary.Text = string.Join(Environment.NewLine, _summaryLines);
+
+    private void ScrollSummaryToEnd()
+    {
+        _updatingLogScroll = true;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                LogSummaryScroller.ScrollToEnd();
+                _updatingLogScroll = false;
+            },
+            DispatcherPriority.Render);
+    }
+
+    private bool IsLogAtEnd() =>
+        LogSummaryScroller.Offset.Y >= Math.Max(0, LogSummaryScroller.Extent.Height - LogSummaryScroller.Viewport.Height - 2);
+
+    private void UpdateLogFollowHint() => LogFollowHint.IsVisible = !_followLogTail;
+
+    private void WaitTimer_OnTick(object? sender, EventArgs eventArgs) => UpdateWaitElapsedText();
+
+    private void UpdateWaitElapsedText()
+    {
+        if (_webUiWaitStartedAt is not { } startedAt)
+        {
+            return;
+        }
+
+        var elapsed = DateTimeOffset.UtcNow - startedAt;
+        var display = elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours} 小时 {elapsed.Minutes} 分钟"
+            : elapsed.TotalMinutes >= 1
+                ? $"{elapsed.Minutes} 分钟 {elapsed.Seconds} 秒"
+                : $"{elapsed.Seconds} 秒";
+        ElapsedText.Text = elapsed >= TimeSpan.FromMinutes(2)
+            ? $"已等待 {display} · 网络较慢时可继续等待或停止安装"
+            : $"已等待 {display} · 可随时停止安装";
+    }
+
+    private void StopWaitTimer()
+    {
+        _waitTimer.Stop();
+        _webUiWaitStartedAt = null;
+        ElapsedText.IsVisible = false;
     }
 }

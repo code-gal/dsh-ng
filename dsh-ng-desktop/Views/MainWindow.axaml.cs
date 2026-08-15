@@ -67,24 +67,24 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    ShowNativeStatus("DSH is running", "DSH Desktop is running in the background. Open it from the tray icon.", showActions: false);
+                    ShowNativeStatus("DSH 正在后台运行", "可从托盘图标打开 DSH。", showActions: false);
                 }
                 break;
             case DesktopRuntimeStatus.Faulted:
                 DestroyWebView();
-                ShowNativeStatus("DSH needs attention", snapshot.Detail, showActions: true);
+                ShowNativeStatus(snapshot.ActivityTitle ?? "DSH 需要处理", snapshot.Detail, showActions: true);
                 break;
             case DesktopRuntimeStatus.Stopping:
                 DestroyWebView();
-                ShowNativeStatus("Stopping DSH", snapshot.Detail, showActions: false);
+                ShowNativeStatus("正在停止 DSH", snapshot.Detail, showActions: false);
                 break;
             case DesktopRuntimeStatus.Stopped:
                 DestroyWebView();
-                ShowNativeStatus("DSH is stopped", snapshot.Detail, showActions: true);
+                ShowNativeStatus("DSH 已停止", snapshot.Detail, showActions: true);
                 break;
             default:
                 DestroyWebView();
-                ShowNativeStatus("Starting DSH", snapshot.Detail, showActions: false);
+                ShowNativeStatus(snapshot.ActivityTitle ?? "正在启动 DSH", snapshot.Detail, showActions: false);
                 break;
         }
     }
