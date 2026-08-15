@@ -4,10 +4,21 @@
 
 ## 📅 里程碑 1: 底座搭建与首跑 (M1)
 
-- [ ] **M1.1 初始化工程**: 使用 `dotnet new` 创建 C# 控制台项目，配置为桌面模式（若涉及托盘）并勾选 AOT。
-- [ ] **M1.2 极简托盘建设**: 编写纯 C# 原生托盘与右键菜单骨架（目前仅含挂载/退出空壳动作）。
-- [ ] **M1.3 配置固化层**: 实现 `Configuration.cs` 与 JSON 的 Source Generator AOT 互操作，探测并锁定启动端口。
-- [ ] **M1.4 跨进程基石**: 实现 `DshOrchestrator.cs` 的前置 Node 检查与私有文件夹环境初始化。
+- [x] **M1.1 初始化工程**: 使用 `dotnet new` 创建 C# 控制台项目，配置为桌面模式（若涉及托盘）并勾选 AOT。
+	- [x] 创建 `net10.0` 控制台工程与基础启动入口。
+	- [x] 启用 Native AOT 发布配置。
+- [x] **M1.2 极简托盘建设**: 编写纯 C# 原生托盘与右键菜单骨架（目前仅含挂载/退出空壳动作）。
+	- [x] 使用 Win32 通知区域 API 创建无窗口托盘图标。
+	- [x] 添加“挂载 DSH”和“退出”原生右键菜单项。
+- [x] **M1.3 配置固化层**: 实现 `Configuration.cs` 与 JSON 的 Source Generator AOT 互操作，探测并锁定启动端口。
+	- [x] 在 `%LocalAppData%/dsh-ng-desktop/appsettings.json` 固化端口。
+	- [x] 使用 `System.Text.Json` Source Generator 读写配置并仅在首次创建时探测可用本机端口。
+
+- [x] **M1.4 跨进程基石**: 实现 `DshOrchestrator.cs` 的前置 Node 检查与私有文件夹环境初始化。
+	- [x] 异步断言全局 `node` 与 `npm` 可执行。
+	- [x] 当当前会话 PATH 尚未刷新时，回退探测 Windows 默认的全局 Node.js 安装目录。
+	- [x] 在环境不可用时显示带官方下载入口与重启指引的原生错误提示。
+	- [x] 初始化 `%LocalAppData%/dsh-ng-desktop` 私有运行目录。
 
 ## 📅 里程碑 2: DSH 调度与交互强化 (M2)
 
