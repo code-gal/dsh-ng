@@ -156,6 +156,29 @@ jobs:
             --blame-crash --blame-crash-dump-type mini --blame-hang --blame-hang-dump-type mini \
             --results-directory release-test-results
 
+      - name: Analyze macOS test host crash dump
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          echo "=== Sequence ==="
+          find release-test-results -name 'Sequence_*.xml' -exec cat {} \;
+          dump="$(find release-test-results -name '*.dmp' -print -quit)"
+          if [[ -z "$dump" ]]; then
+            echo 'No crash dump was produced.' >&2
+            exit 0
+          fi
+          dotnet tool install --global dotnet-dump --version 9.* || true
+          tool="$HOME/.dotnet/tools/dotnet-dump"
+          if [[ ! -x "$tool" ]]; then
+            dotnet tool install --global dotnet-dump
+            tool="$HOME/.dotnet/tools/dotnet-dump"
+          fi
+          "$tool" analyze "$dump" \
+            --command 'threads' \
+            --command 'clrstack -all -f' \
+            --command 'printexception' > crash-analysis.txt 2>&1 || true
+          sed -n '1,400p' crash-analysis.txt
+
       - name: Upload macOS test host crash diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -163,7 +186,9 @@ jobs:
           name: desktop-release-macos-test-diagnostics-${{ needs.prepare.outputs.version }}
           if-no-files-found: ignore
           retention-days: 7
-          path: release-test-results/**
+          path: |
+            release-test-results/**
+            crash-analysis.txt
 
       - name: Upload internal macOS dSYM verification artifact
         uses: actions/upload-artifact@v4
