@@ -1,3 +1,5 @@
+using DshNgDesktop.Core;
+
 namespace DshNgDesktop.Platform;
 
 public enum PlatformKind
@@ -88,5 +90,9 @@ public interface IPlatformServices
 
     Task<PlatformOperationResult> UnregisterShortcutsAsync(
         string displayName,
+        CancellationToken cancellationToken = default);
+
+    Task<PlatformOperationResult> ClearWebViewDataAsync(
+        AppPaths paths,
         CancellationToken cancellationToken = default);
 }

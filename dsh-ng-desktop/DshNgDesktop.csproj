@@ -39,6 +39,7 @@
 
   <ItemGroup>
     <Compile Remove="LocalTests\**\*.cs" />
+    <Compile Remove="ReleaseTests\**\*.cs" />
     <Compile Remove="DshDesktop.SetupHost\**\*.cs" />
   </ItemGroup>
 

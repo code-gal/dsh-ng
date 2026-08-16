@@ -4,13 +4,13 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using DshNgDesktop.Core;
 using DshNgDesktop.Infrastructure;
+using DshNgDesktop.Platform;
 using System.ComponentModel;
 
 namespace DshNgDesktop.Views;
 
 public partial class MainWindow : Window
 {
-    private static readonly Guid MacOsDataStoreIdentifier = new("b2652613-ae3c-4ad1-9efe-1d2206998c72");
     private DesktopRuntime? _runtime;
     private NativeWebView? _webView;
     private bool _closingForExit;
@@ -128,7 +128,7 @@ public partial class MainWindow : Window
                 webView2.UserDataFolder = Runtime.Paths.WebViewDataDirectory;
                 break;
             case AppleWKWebViewEnvironmentRequestedEventArgs wkWebView:
-                wkWebView.DataStoreIdentifier = MacOsDataStoreIdentifier;
+                wkWebView.DataStoreIdentifier = MacOSWebViewDataStore.Identifier;
                 break;
         }
     }

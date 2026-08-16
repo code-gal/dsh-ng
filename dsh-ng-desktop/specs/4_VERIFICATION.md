@@ -63,7 +63,7 @@
 - **V5.7 关闭行为**：安装完成后关闭主窗口销毁当前业务 WebView 并隐藏窗口，DSH 与托盘继续运行；安装过程中关闭会进入停止与回滚确认。
 - **V5.8 启动状态一致性**：前台主窗口显示 DSH 检查/更新/启动阶段；后台登录启动保持窗口隐藏，并在托盘提示文本显示相同阶段、就绪或故障状态。
 - **V5.9 隐藏窗口资源回收**：DSH 就绪后关闭主窗口，DSH、客户端和托盘继续运行，但当前 WebView 被销毁且 WebView2 管理器进程在合理时间内退出；从托盘重新打开后 Web UI 可重新创建并正常交互。
-- **V5.10 macOS WebView 数据清理**：分别在 macOS 13 与 macOS 14+ 创建可识别的 WKWebView 持久数据后卸载；兼容默认存储和 identifier 存储均被平台清理能力删除，删除一个产品的数据不影响其他应用或用户工作区。
+- **V5.10 macOS WebView 数据清理**：在 macOS 14+ 创建可识别的 WKWebView identifier 持久数据后卸载；平台清理能力删除对应产品存储，删除一个产品的数据不影响其他应用或用户工作区。
 
 ## 6. 自启动
 
@@ -100,12 +100,13 @@
 - **V8.11 显式安装角色**：直接运行开发或发布目录中的 `DshNgDesktop.exe` 不会隐式执行安装事务；只有 SetupHost 提供的显式安装会话参数可进入安装引导。安装成功后系统应用列表的卸载入口指向受管安装目录，不依赖原始下载文件或临时 staging。
 - **V8.12 独立发行与源码洁净**：桌面 Release 使用 `desktop-vX.Y.Z` 标签；`artifacts/installer/`、安装器、校验值和签名副产物均不被 Git 跟踪，并可与其他子项目的 Release 并存。
 - **V8.13 标签自动发布**：推送合法 `desktop-vX.Y.Z` 标签后，GitHub Actions 先验证 Changelog 的同版本条目；Windows Runner 构建 AOT/.NET 两个安装器，macOS ARM64 Runner 构建 AOT `pkg`，并各自生成 SHA-256。仅在全部构建成功后 Release 才包含精炼 Changelog、提交数量、比较链接、平台前置条件、Windows SmartScreen/macOS Gatekeeper 警告及六个不可变附件；普通分支推送不得创建 Release，也不得逐条罗列提交或生成详细 Release Notes。
-- **V8.14 macOS 可执行产物门禁**：macOS 构建检查包内主程序为 arm64、具有用户执行位、必要 dylib 完整、Info.plist 声明应用类型/版本/最低系统/图标，并保存匹配 dSYM。门禁必须在真实 Apple Silicon 上执行维护锁、部署、Node 解析、进程组和安装退出码冒烟；交叉编译、包结构检查、SHA-256 或单独 `--doctor` 均不能替代。
+- **V8.14 macOS 可执行产物门禁**：macOS 14+ Apple Silicon 构建检查包内主程序和 WebKit helper 为 arm64、具有用户执行位、必要 dylib 完整、Info.plist 与 Mach-O 都声明 14.0 最低系统、并保存匹配 dSYM。门禁必须在真实 Apple Silicon 上执行维护锁、部署、Homebrew 或版本管理器 Node/npx 解析、私有工作目录、进程组和安装退出码冒烟；交叉编译、包结构检查、SHA-256 或单独 `--doctor` 均不能替代。
 - **V8.15 跨平台回归隔离**：macOS 修复合并前重新执行 Windows `win-x64` AOT/.NET 构建及安装、单实例、运行中替换、DSH 启停和卸载核心用例；Windows 基线失败时不得以 macOS 通过为由继续发布。
 
 ## 9. 测试策略
 
 - 本地专属测试工程固定为 `dsh-ng-desktop/LocalTests/`，并由根目录 `.gitignore` 精确排除；主项目必须从编译项中排除该目录，不得将其加入 Git 索引、解决方案、CI 输入或正式发行物。
+- GitHub 发布门禁只能引用受版本控制的 `dsh-ng-desktop/ReleaseTests/` 与打包脚本，不能引用 `LocalTests/`；ReleaseTests 不访问用户真实产品目录、共享 npm cache、`DSH_HOME` 或工作区。
 - 本地测试工程可引用 `DshNgDesktop.csproj`，但测试临时文件必须位于测试工程的输出目录或显式的测试专属产品根目录；每项测试负责清理自己创建的数据。
 - 纯状态机、路径所有权、端口选择、日志脱敏和补偿操作必须有自动化单元测试。
 - npx 进程、HTTP 健康检查和失败回滚使用可控替身完成自动化集成测试。

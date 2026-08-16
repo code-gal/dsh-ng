@@ -142,6 +142,26 @@ jobs:
             shasum -a 256 -c "$(basename "$package").sha256"
           )
 
+      - name: Run macOS ARM64 package and runtime gates
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          package="dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v$RELEASE_VERSION-osx-arm64-aot.pkg"
+          bash dsh-ng-desktop/Installer/Packaging/macos/verify-macos-installer.sh --package "$package"
+          dotnet restore dsh-ng-desktop/ReleaseTests/DshNgDesktop.ReleaseTests.csproj \
+            -r osx-arm64 --configfile dsh-ng-desktop/NuGet.Config
+          dotnet test dsh-ng-desktop/ReleaseTests/DshNgDesktop.ReleaseTests.csproj \
+            -r osx-arm64 --no-restore
+
+      - name: Upload internal macOS dSYM verification artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-macos-dsym-${{ needs.prepare.outputs.version }}
+          if-no-files-found: error
+          retention-days: 30
+          path: dsh-ng-desktop/artifacts/installer/.internal/dsym/${{ needs.prepare.outputs.version }}
+
       - name: Upload macOS release assets
         uses: actions/upload-artifact@v4
         with:
@@ -259,8 +279,8 @@ jobs:
             echo "- \`-dotnet.exe\`：需要 .NET 10 Desktop Runtime。"
             echo "- 两种安装器均需要系统已有可用的 Node.js 与 npx。Windows SmartScreen 可能显示警告；请勿导入根证书或发布者证书。"
             echo
-            echo "### macOS Apple Silicon"
-            echo "- \`-osx-arm64-aot.pkg\`：Native AOT 自包含，仅支持 Apple Silicon，并需要系统已有可用的 Node.js 与 npx。"
+            echo "### macOS 14+ Apple Silicon"
+            echo "- \`-osx-arm64-aot.pkg\`：Native AOT 自包含，仅支持 macOS 14 及以上的 Apple Silicon，并需要系统已有可用的 Node.js 与 npx。"
             echo "- 该 PKG 未签名且未公证。Gatekeeper 可能警告或阻止第一次打开；确认来源和 SHA-256 后，仅按 macOS 的单次人工打开流程继续，勿关闭 Gatekeeper、SIP 或其他全局安全保护。"
           } > "$notes_file"
 

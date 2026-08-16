@@ -1,22 +1,112 @@
 #!/bin/sh
 set -eu
 
+package_version="@PACKAGE_VERSION@"
+installer_root="/Library/Application Support/DSH Desktop Installer"
+diagnostic_log="/tmp/dsh-desktop-installer-${package_version}-$$.log"
+
+exec >>"$diagnostic_log" 2>&1
+echo "DSH Desktop macOS postinstall started for $package_version."
+echo "Diagnostic log: $diagnostic_log"
+
+cleanup_installer_root() {
+  if [ -d "$installer_root" ]; then
+    rm -rf "$installer_root"
+  fi
+}
+
+on_exit() {
+  exit_status=$?
+  trap - EXIT
+  if ! cleanup_installer_root; then
+    echo "The package bootstrap directory could not be removed."
+    if [ "$exit_status" -eq 0 ]; then
+      exit_status=1
+    fi
+  fi
+  exit "$exit_status"
+}
+
+trap on_exit EXIT
+trap 'exit 1' HUP INT TERM
+
 console_user="$(stat -f '%Su' /dev/console)"
 case "$console_user" in
-  ''|root|loginwindow) exit 0 ;;
+  ''|root|loginwindow)
+    echo "No active console user is available; the Avalonia installation transaction cannot be shown."
+    cleanup_installer_root || true
+    exit 1
+    ;;
 esac
 uid="$(id -u "$console_user")"
 home_directory="$(dscl . -read "/Users/$console_user" NFSHomeDirectory | awk '{print $2}')"
-bootstrap="/Library/Application Support/DSH Desktop Installer/DSH Desktop Installer.app/Contents/MacOS/DshNgDesktop"
-payload="/Library/Application Support/DSH Desktop Installer/DSH Desktop Installer.app/Contents/Resources/payload/DSH Desktop.app"
+if [ -z "$home_directory" ]; then
+  echo "The active console user's home directory could not be resolved."
+  cleanup_installer_root || true
+  exit 1
+fi
+user_tmp_directory="$(launchctl asuser "$uid" sudo -H -u "$console_user" /usr/bin/getconf DARWIN_USER_TEMP_DIR)"
+if [ -z "$user_tmp_directory" ]; then
+  echo "The active console user's temporary directory could not be resolved."
+  exit 1
+fi
+bootstrap="$installer_root/DSH Desktop Installer.app/Contents/MacOS/DshNgDesktop"
+payload="$installer_root/DSH Desktop Installer.app/Contents/Resources/payload/DSH Desktop.app"
 target="$home_directory/Applications/DSH Desktop.app"
+if [ ! -x "$bootstrap" ] || [ ! -d "$payload" ]; then
+  echo "The package bootstrap payload is incomplete."
+  cleanup_installer_root || true
+  exit 1
+fi
 
 # The native Avalonia bootstrap owns the visible transaction, health check and
 # compensation. launchctl asuser keeps its UI in the logged-in user's session.
-launchctl asuser "$uid" sudo -u "$console_user" "$bootstrap" \
+set +e
+launchctl asuser "$uid" sudo -H -u "$console_user" /usr/bin/env \
+  HOME="$home_directory" \
+  USER="$console_user" \
+  LOGNAME="$console_user" \
+  TMPDIR="$user_tmp_directory" \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+  "$bootstrap" \
   --install \
   --payload "$payload" \
   --install-root "$target" \
-  --package-version "@PACKAGE_VERSION@" \
-  --build-flavor Aot >/dev/null 2>&1 &
+  --package-version "$package_version" \
+  --build-flavor Aot
+transaction_status=$?
+set -e
+echo "Avalonia installation transaction exited with code $transaction_status."
+
+if [ "$transaction_status" -ne 0 ]; then
+  echo "Installation failed; the installed client was not started."
+  exit "$transaction_status"
+fi
+if ! cleanup_installer_root; then
+  echo "The package bootstrap directory could not be removed."
+  exit 1
+fi
+
+installed_executable="$target/Contents/MacOS/DshNgDesktop"
+if [ ! -x "$installed_executable" ]; then
+  echo "The committed client executable is missing or not executable: $installed_executable"
+  exit 1
+fi
+
+set +e
+launchctl asuser "$uid" sudo -H -u "$console_user" /usr/bin/env \
+  HOME="$home_directory" \
+  USER="$console_user" \
+  LOGNAME="$console_user" \
+  TMPDIR="$user_tmp_directory" \
+  PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+  "$installed_executable" --background >>"$diagnostic_log" 2>&1 &
+launch_status=$?
+set -e
+if [ "$launch_status" -ne 0 ]; then
+  echo "The installed client could not be started after a successful transaction."
+  exit 1
+fi
+
+echo "Installation transaction committed and the installed client was launched."
 exit 0

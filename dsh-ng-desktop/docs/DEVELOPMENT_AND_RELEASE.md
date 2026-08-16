@@ -56,6 +56,16 @@ artifacts/installer/DSH-Desktop-Setup-v0.9.1-osx-arm64-aot.pkg
 artifacts/installer/DSH-Desktop-Setup-v0.9.1-osx-arm64-aot.pkg.sha256
 ```
 
+构建同时把与本次版本精确匹配的 dSYM 保存到 `artifacts/installer/.internal/dsym/<SemVer>/`，不装入用户 PKG，也不上传公开 Release。Apple Silicon 构建完成后必须在同一 arm64 主机执行包结构与 AOT 门禁：
+
+```bash
+bash Installer/Packaging/macos/verify-macos-installer.sh \
+  --package artifacts/installer/DSH-Desktop-Setup-v0.9.1-osx-arm64-aot.pkg
+dotnet test ReleaseTests/DshNgDesktop.ReleaseTests.csproj -r osx-arm64
+```
+
+门禁会拒绝非 Darwin/非 arm64/macOS 14 以下宿主，并覆盖 PKG 中的 arm64 可执行文件、Unix 执行位、bundle 元数据、postinstall 同步退出契约和真实 Native AOT `--doctor` 执行；受版本控制的 ReleaseTests 补充维护锁、Node/npx 解析、私有工作目录和 spawn-time 进程组路径。
+
 所有下载物必须在目标平台校验 SHA-256。Windows 使用 `Get-FileHash`，macOS 使用 `shasum -a 256`；散列值必须与同名 `.sha256` 文件一致。
 
 ## 发布与人工验收

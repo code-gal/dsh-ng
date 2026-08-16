@@ -123,7 +123,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 ### 5.3 进程所有权
 
-- `DshSupervisor` 创建并拥有 npx 进程组及全部子进程，记录 PID、进程启动时间和实例标识。
+- `DshSupervisor` 创建并拥有 npx 进程组及全部子进程，记录 PID、进程启动时间和实例标识；每个平台启动器都必须应用请求中的私有 `launcher-cwd`，不得继承 Finder、LaunchAgent 或安装器的当前工作目录。
 - Windows 使用进程组与 Job Object；macOS 使用独立 process group。
 - macOS 的进程启动与进程组创建是同一个平台原子边界：使用 spawn-time process-group 属性或在执行 npx 前完成 `setpgid(0, 0)` 的窄启动宿主，再 `exec` 目标。通用 `Process.Start` 后对已执行子进程调用 `setpgid(childPid, childPid)` 不属于有效实现。
 - 正常停止先发送平台对应的优雅终止信号，并给 DSH 预留清理时间；超时后终止受管进程组。
@@ -141,7 +141,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 - `EnvironmentDoctor` 复用安装器的环境探测，检查 Node/npx、目录权限、端口、DSH 健康、WebView 前置条件和自启动状态。
 - 诊断默认只读，可供原生故障页面和 `--doctor` 命令使用，并支持结构化输出。
-- Node/npx 定位由独立的 `INodeExecutableResolver` 边界负责。Windows 保持当前 `PATH` 语义；macOS 依次检查当前 `PATH`、受支持的系统/Homebrew 位置和当前用户登录环境中的版本管理器入口，最终只接受通过 `node --version`、`npx --version` 验证的绝对普通文件路径。Finder、LaunchAgent、`pkg` 引导和终端诊断均调用同一解析器，不在调用点拼接临时 `PATH`。
+- Node/npx 定位由独立的 `INodeExecutableResolver` 边界负责。Windows 保持当前 `PATH` 语义；macOS 依次检查当前 `PATH`、受支持的系统/Homebrew 位置和当前用户登录环境中的版本管理器入口，返回同源或兼容的绝对 `node`/`npx` 对及其受控执行 PATH。`node --version`、`npx --version` 和实际 npx 启动都使用该 PATH，避免 `#!/usr/bin/env node` 在 Finder、LaunchAgent 或 pkg 最小环境中失效。解析器不调用 npm 安装、不改写系统环境，并在诊断中记录不含敏感环境值的来源类别。
 - 运行失败时只允许一次普通重试；确认私有 npx cache 损坏后可删除该缓存并再试一次。
 - `DSH_HOME` 属于用户在客户端内形成的数据，不参与自动修复清理；重置它必须是独立、明确、带警告的用户操作，且不属于首轮范围。
 - 第一版不引入 Windows Service、macOS LaunchDaemon、常驻更新器或独立 watchdog；仅当真实验收证明进程残留无法由 Job Object/process group 和下次启动恢复解决时再扩展。
@@ -149,7 +149,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 ### 5.6 DSH Supervisor
 
 - `DshSupervisor` 是唯一允许创建和停止 DSH 进程的共享服务。调用方通过 `DshSupervisorOptions` 提供超时、重试和可替换的进程/HTTP 边界；生产默认值固定为未锁版本的 npx 命令。
-- 启动前以受限时的 `node --version` 与 `npx --version` 验证可执行文件。Windows 解析遵循当前进程 `PATH` 并支持 `.exe`、`.cmd` 和 `.bat`；macOS 使用 `INodeExecutableResolver` 返回的绝对路径，不假定 GUI/LaunchAgent 会加载 shell profile。解析器不调用 npm 安装、不改写系统环境，并在诊断中记录不含敏感环境值的来源类别。
+- 启动前以受限时的 `node --version` 与 `npx --version` 验证可执行文件。Windows 解析遵循当前进程 `PATH` 并支持 `.exe`、`.cmd` 和 `.bat`；macOS 使用 `INodeExecutableResolver` 返回的绝对路径和受控 PATH，不假定 GUI/LaunchAgent 会加载 shell profile。解析器不调用 npm 安装、不改写系统环境，并在诊断中记录不含敏感环境值的来源类别。
 - Supervisor 创建 `npm_config_cache`、`DSH_HOME` 和 `launcher-cwd` 后，以 `npx --yes @deepseek-ai/dsh web --host 127.0.0.1 --port <port>` 启动。子进程只继承必要环境，并固定工作目录为 `launcher-cwd`。
 - 安装事务中的 DSH 就绪等待没有固定失败时限：它持续至健康检查成功、受管进程退出或安装器停止。Supervisor 定期发布心跳、健康检查状态和经归类的 npx 输出；安装窗口独占已等待时长显示，心跳不得重复改写主状态。npx 输出只能在可识别的下载、解压、安装或服务启动事件时更新用户界面，完整原始输出只写入运行日志。普通运行时启动可使用独立、受限的启动超时；等待、停止和进程退出结果均写入运行日志。
 - Supervisor 对 npx 的明确错误输出作保守归类：在更新检查阶段识别网络错误，在实际下载/解压/安装阶段识别更新失败；只在进程退出或健康检查最终失败后进入故障状态。故障快照携带可读错误类别，供主窗口和托盘共享显示；原始 stderr 不直接显示在 UI。
@@ -183,7 +183,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 安装、启动、停止和故障状态由 Avalonia 原生视图呈现；Windows 安装引导的可见文本使用简体中文。
 - `NativeWebView` 直接浏览 DSH Web UI，不实现导航白名单、外部链接拦截或宿主脚本桥接。
 - Windows 在 WebView 环境创建前设置私有 `UserDataFolder`。
-- macOS 使用固定 `DataStoreIdentifier` 隔离 WKWebView 持久数据。平台 WebView 数据清理接口在 macOS 14 及以上删除该 identifier 对应的数据存储，在 macOS 13 清除该应用兼容使用的默认 WKWebsiteDataStore；普通 `AppPaths` 目录删除不能替代 WebKit 数据存储清理。
+- macOS 使用固定 `DataStoreIdentifier` 隔离 WKWebView 持久数据。平台 WebView 数据清理接口只在受支持的 macOS 14 及以上删除该 identifier 对应的数据存储；普通 `AppPaths` 目录删除不能替代 WebKit 数据存储清理。
 - WebView 销毁且浏览器子进程退出后，卸载器才可删除相关数据。
 - 正常窗口关闭在隐藏窗口前将 `NativeWebView` 从视觉树移除并释放宿主引用，使 WebView2 管理器进程可在没有其他 WebView 引用后退出；窗口重新显示且 Coordinator 仍为 `Ready` 时创建新的 `NativeWebView` 并导航到同一健康地址。
 
@@ -200,7 +200,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 主窗口仅在 Coordinator 已收到健康检查成功的 loopback URI 后创建 `NativeWebView` 并导航。启动、停止和故障阶段只显示 Avalonia 原生视图；不订阅或改写网页导航、外部链接、脚本消息和资源请求。
 - `NativeWebView.EnvironmentRequested` 是唯一的浏览器环境配置点：Windows 创建并使用 `AppPaths.WebViewDataDirectory` 作为 WebView2 用户数据目录；macOS 设置固定的产品 `DataStoreIdentifier`。该目录或数据存储的删除仍只由安装清单清理流程执行。
 - 托盘图标由应用级 Avalonia `TrayIcon` 创建。Windows 图标点击和两个平台的原生菜单都可显示主窗口；后台启动保持主窗口隐藏，并根据 Coordinator 快照更新托盘提示文本，避免弹窗打断登录；“退出”先销毁 WebView，再停止 Coordinator 所拥有的 DSH，最后显式关闭 Avalonia 生命周期。
-- `SingleInstanceCoordinator` 除激活和卸载命令外还承载安装维护停止命令。单实例互斥与安装维护门分离：Windows 可使用现有命名同步原语；macOS 的维护门使用按当前用户隔离、进程退出可自动释放、且可跨 `await` 持有的排他文件锁或等价实现，禁止创建命名 `Semaphore`，也禁止把具有线程所有权的命名 `Mutex` 当作异步租约。运行中客户端收到卸载或安装维护请求后，立刻阻止新操作，销毁 WebView、停止 Supervisor 并关闭生命周期；卸载助手或安装器只在收到确认且确认单实例互斥体已释放后，才开始删除或替换文件。无运行实例时，调用方取得同一互斥体后可直接继续。未确认或超时必须以失败退出，不删除或替换文件。卸载清理仍分两阶段：先保留 `state/install-manifest.json` 并删除其余受管路径和安装根目录，最后才删除状态目录。
+- `SingleInstanceCoordinator` 除激活和卸载命令外还承载安装维护停止命令。单实例互斥与安装维护门分离：Windows 可使用现有命名同步原语；macOS 的实例锁和维护锁使用按当前用户隔离、进程退出可自动释放、且可跨 `await` 持有的排他文件租约，禁止创建命名 `Semaphore`，也禁止把具有线程所有权的命名 `Mutex` 当作异步租约。两份租约必须位于不依赖 `TMPDIR` 的稳定、按当前用户命名的租约根目录；任何新主实例在取得实例锁前必须先通过维护门，保证安装器持有维护租约期间没有第三个客户端可抢占。运行中客户端收到卸载或安装维护请求后，立刻阻止新操作，销毁 WebView、停止 Supervisor 并关闭生命周期；卸载助手或安装器只在收到确认且确认单实例互斥体已释放后，才开始删除或替换文件。无运行实例时，调用方取得同一互斥体后可直接继续。未确认或超时必须以失败退出，不删除或替换文件。卸载清理仍分两阶段：先保留 `state/install-manifest.json` 并删除其余受管路径和安装根目录，最后才删除状态目录。
 - 安装窗口在事务未结束时拦截窗口关闭，显示原生停止与回滚确认。显式安装会话提交成功后保留完成页，用户关闭时有序释放临时进程拥有的 Supervisor 并以成功码退出；SetupHost 清理 staging 后启动受管 `InstallRoot` 中的客户端，由已安装实例重新建立正常运行期的 Supervisor。临时安装进程不得长期承载桌面运行生命周期，否则 SetupHost 无法安全清理负载。
 
 ## 7. 平台发行
@@ -218,8 +218,8 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 ### 7.2 macOS
 
-- 每个 `osx-arm64` 版本生成一个 Native AOT、自包含的 `DSH-Desktop-Setup-v<SemVer>-osx-arm64-aot.pkg`。`pkg` 安装临时 bootstrap 到系统受管位置，其 postinstall 在当前登录用户会话中启动同一 Avalonia 安装事务，目标固定为 `~/Applications/DSH Desktop.app`。postinstall 必须同步等待事务退出、保留可定位的诊断输出并原样返回退出码；没有有效控制台用户时明确失败。事务退出后由仍具安装权限的 postinstall 删除精确的 `/Library/Application Support/DSH Desktop Installer` 临时负载，成功时再从受管目标启动客户端，失败时不得启动目标。macOS package receipt 可作为操作系统安装历史保留，但不得对应仍存在的 bootstrap 或第二份客户端负载。
-- 客户端 `.app` 的 `Info.plist` 至少声明应用 bundle 类型、稳定标识、版本、最低系统版本和原生图标；打包完成后验证主程序架构、Unix 执行位、必要 dylib、bundle 元数据和包内路径。构建成功但未执行这些检查不能进入发布任务。
+- 每个 macOS 14 及更高版本的 `osx-arm64` 版本生成一个 Native AOT、自包含的 `DSH-Desktop-Setup-v<SemVer>-osx-arm64-aot.pkg`。`pkg` 安装临时 bootstrap 到系统受管位置，其 postinstall 在当前登录用户会话中以显式 `HOME`、`USER`、`LOGNAME`、稳定用户临时目录和最小系统 PATH 启动同一 Avalonia 安装事务，目标固定为 `~/Applications/DSH Desktop.app`。postinstall 必须同步等待事务退出、保留可定位的诊断输出并原样返回退出码；没有有效控制台用户时明确失败，并以 trap 覆盖成功、失败和中断的精确 bootstrap 清理。事务退出后成功时再从受管目标启动客户端，失败时不得启动目标。macOS package receipt 可作为操作系统安装历史保留，但不得对应仍存在的 bootstrap 或第二份客户端负载。
+- 客户端 `.app` 的 `Info.plist` 至少声明应用 bundle 类型、稳定标识、版本、macOS 14.0 最低系统版本和原生图标；主程序与 WebKit helper 的 Mach-O 最低部署目标也必须是 14.0。打包完成后验证主程序架构、Unix 执行位、必要 dylib、bundle 元数据和包内路径。构建成功但未执行这些检查不能进入发布任务。
 - `pkg`、嵌套 bootstrap 和客户端 `.app` 均不执行 codesign、productsign、notarytool 或 stapler。工作流不得读取或保存签名身份、Apple ID、应用专用密码或公证令牌。
 - Release 必须说明该包未签名且未公证，macOS Gatekeeper 可能警告或阻止第一次打开；用户只能在确认 SHA-256 和来源后按 macOS 的单次人工打开流程继续。不得建议关闭 Gatekeeper、SIP 或其他全局安全保护。
 - 不维护 macOS Intel、macOS .NET 依赖或其他 Apple 平台的项目构建/验证矩阵；外部开发者可自行从源码构建，结果不构成项目发行准入。
@@ -230,7 +230,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 每个 Windows `win-x64` 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。每个 macOS `osx-arm64` 版本上传一个 Native AOT `pkg`。每个安装包均附带同名 SHA-256 文件。
 - Release 同时提供 SHA-256 校验值、Changelog 用户可见更新、系统与 Node 前置条件和签名状态。未签名 Windows 社区预览必须明确标记 SmartScreen 风险、校验步骤和“不得导入根证书”；未签名、未公证 macOS 社区预览必须说明 Gatekeeper 风险与单次人工打开要求。
 - 桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
-- `desktop-v*` 标签触发专属 GitHub Actions 工作流：准备任务校验标签 SemVer 与 `CHANGELOG.md` 的版本条目；Windows Runner 构建 `win-x64` AOT/.NET 依赖安装器，macOS ARM64 Runner 构建 `osx-arm64` AOT `pkg`，各自生成 SHA-256。两个构建任务均成功后，发布任务下载六个附件，以前一个 `desktop-v*` 标签为范围计算提交数量与 GitHub 比较链接，创建未签名社区预览 Release，并将精炼的 Changelog 条目作为更新说明。工作流不逐条输出提交或自动生成详细 Release Notes；只授予 `contents: write`，不持有签名私钥、Apple 凭据或公证凭据，也不代替推送标签前在真实目标机器上的安装、卸载和风险验收。
+- `desktop-v*` 标签触发专属 GitHub Actions 工作流：准备任务校验标签 SemVer 与 `CHANGELOG.md` 的版本条目；Windows Runner 构建 `win-x64` AOT/.NET 依赖安装器，macOS ARM64 Runner 构建 `osx-arm64` AOT `pkg`，并运行受版本控制的 `ReleaseTests` 与包验证脚本，随后各自生成 SHA-256。两个构建任务均成功后，发布任务下载六个附件，以前一个 `desktop-v*` 标签为范围计算提交数量与 GitHub 比较链接，创建未签名社区预览 Release，并将精炼的 Changelog 条目作为更新说明。工作流不逐条输出提交或自动生成详细 Release Notes；只授予 `contents: write`，不持有签名私钥、Apple 凭据或公证凭据，也不代替推送标签前在真实目标机器上的安装、卸载和风险验收。
 - 客户端不查询 GitHub Release，也不提示或安装客户端更新；用户自行获取新版本。
 
 ## 8. 日志与错误

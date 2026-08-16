@@ -115,7 +115,10 @@ public sealed class EnvironmentDoctor : IInstallerPreflight
     {
         if (result.Succeeded)
         {
-            checks.Add(Pass($"{result.Command}.available", displayName, $"{displayName} is available on PATH ({result.Version})."));
+            checks.Add(Pass(
+                $"{result.Command}.available",
+                displayName,
+                $"{displayName} is available from {result.Source ?? "the resolved executable location"} at {result.ExecutablePath} ({result.Version})."));
             return;
         }
 

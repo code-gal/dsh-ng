@@ -24,7 +24,7 @@ Windows `win-x64` 与 macOS `osx-arm64` 是当前安装包、发布和验收目�
 
 ## 系统要求
 
-- Windows 10/11 x64，或搭载 Apple Silicon 的 macOS 13 及更高版本。
+- Windows 10/11 x64，或搭载 Apple Silicon 的 macOS 14 及更高版本。
 - 已安装 Node.js，且 `node` 与 `npx` 位于当前用户可用的 `PATH` 中。
 - Windows AOT 和 macOS AOT 安装器不要求 .NET Runtime；Windows .NET 依赖安装器要求 .NET 10 Desktop Runtime。
 - 首次运行需要网络访问，以便 npx 获取 DSH。首次供应可能持续数分钟，安装器会持续等待并允许用户安全停止和回滚。

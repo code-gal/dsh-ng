@@ -42,6 +42,12 @@ public sealed class UninstallCoordinator
             return PlatformOperationResult.Failure($"The DSH Desktop installation manifest could not be verified: {exception.Message}");
         }
 
+        var webViewCleanup = await _platformServices.ClearWebViewDataAsync(_paths, cancellationToken).ConfigureAwait(false);
+        if (!webViewCleanup.Succeeded)
+        {
+            return PlatformOperationResult.Failure($"The DSH Desktop WebView data could not be cleared: {webViewCleanup.Error}");
+        }
+
         var startup = await _platformServices.UnregisterStartupAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
         if (!startup.Succeeded)
         {

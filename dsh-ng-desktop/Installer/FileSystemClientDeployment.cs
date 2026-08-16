@@ -1,4 +1,5 @@
 using DshNgDesktop.Core;
+using System.Runtime.Versioning;
 
 namespace DshNgDesktop.Installer;
 
@@ -57,10 +58,12 @@ public sealed class FileSystemClientDeployment : IClientDeployment
             ? Path.Combine(parent, $".{Path.GetFileName(installRoot)}.{Guid.NewGuid():N}.replaced")
             : null;
         var existingInstallRootMoved = false;
+        var installRootMoved = false;
 
         try
         {
             await CopyDirectoryAsync(payload, staging, cancellationToken).ConfigureAwait(false);
+            ValidateMacOSAppPermissions(staging);
             cancellationToken.ThrowIfCancellationRequested();
             if (backup is not null)
             {
@@ -69,11 +72,18 @@ public sealed class FileSystemClientDeployment : IClientDeployment
             }
 
             Directory.Move(staging, installRoot);
+            installRootMoved = true;
+            ValidateMacOSAppPermissions(installRoot);
             return new ClientDeploymentResult(installRoot, CreatedInstallRoot: true, backup);
         }
         catch
         {
             DeleteStagingDirectory(staging);
+            if (installRootMoved)
+            {
+                DeleteStagingDirectory(installRoot);
+            }
+
             if (existingInstallRootMoved && backup is not null && !Directory.Exists(installRoot) && Directory.Exists(backup))
             {
                 Directory.Move(backup, installRoot);
@@ -155,7 +165,8 @@ public sealed class FileSystemClientDeployment : IClientDeployment
         }
 
         Directory.CreateDirectory(destination);
-        foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        var directories = Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories).ToArray();
+        foreach (var directory in directories)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var directoryInfo = new DirectoryInfo(directory);
@@ -167,7 +178,8 @@ public sealed class FileSystemClientDeployment : IClientDeployment
             Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
         }
 
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        var files = Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).ToArray();
+        foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fileInfo = new FileInfo(file);
@@ -181,6 +193,55 @@ public sealed class FileSystemClientDeployment : IClientDeployment
             await using var input = File.OpenRead(file);
             await using var output = File.Create(target);
             await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            foreach (var directory in directories.Append(source).OrderByDescending(path => path.Length))
+            {
+                CopyUnixMode(directory, Path.Combine(destination, Path.GetRelativePath(source, directory)));
+            }
+
+            foreach (var file in files)
+            {
+                CopyUnixMode(file, Path.Combine(destination, Path.GetRelativePath(source, file)));
+            }
+
+            CopyUnixMode(source, destination);
+        }
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void CopyUnixMode(string source, string destination)
+    {
+        File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+    }
+
+    private static void ValidateMacOSAppPermissions(string appRoot)
+    {
+        if (!OperatingSystem.IsMacOS() || !Directory.Exists(Path.Combine(appRoot, "Contents", "MacOS")))
+        {
+            return;
+        }
+
+        var executable = Path.Combine(appRoot, "Contents", "MacOS", "DshNgDesktop");
+        var uninstallCommand = Path.Combine(appRoot, "Contents", "Resources", "Uninstall DSH Desktop.command");
+        EnsureUserExecutable(executable, "macOS 客户端主程序");
+        EnsureUserExecutable(uninstallCommand, "macOS 卸载入口");
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void EnsureUserExecutable(string path, string description)
+    {
+        if (!File.Exists(path))
+        {
+            throw new IOException($"{description}不存在：{path}");
+        }
+
+        var mode = File.GetUnixFileMode(path);
+        if ((mode & UnixFileMode.UserExecute) == 0)
+        {
+            throw new UnauthorizedAccessException($"{description}缺少当前用户执行权限：{path}");
         }
     }
 

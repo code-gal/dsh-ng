@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
+using System.Runtime.Versioning;
 using DshNgDesktop.Installer;
 
 namespace DshNgDesktop.Infrastructure;
@@ -19,7 +20,8 @@ public sealed class InstanceCommandRequestedEventArgs(string command) : EventArg
 public sealed record InstanceCommandRequestResult(bool Delivered, bool Accepted, string? Error = null);
 
 /// <summary>
-/// Owns one per-user mutex and a local named-pipe listener. A later launch can
+/// Owns one per-user instance lease and a local named-pipe listener. Windows
+/// uses a named mutex; macOS uses an exclusive file lease. A later launch can
 /// request activation, but cannot create a second DSH supervisor.
 /// </summary>
 public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMaintenanceCoordinator
@@ -32,8 +34,12 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
     private readonly string _mutexName;
     private readonly string _pipeName;
     private readonly string _maintenanceName;
+    private readonly string _macInstanceLeasePath;
+    private readonly string _macMaintenanceLeasePath;
     private Mutex? _mutex;
     private Semaphore? _maintenanceSemaphore;
+    private FileStream? _macInstanceLease;
+    private FileStream? _macMaintenanceLease;
     private CancellationTokenSource? _listenerCancellation;
     private Task? _listenerTask;
     private bool _isPrimary;
@@ -47,6 +53,14 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
         _mutexName = $"dsh-ng-desktop-{nameHash}-instance";
         _pipeName = $"dsh-ng-desktop-{nameHash}-activation";
         _maintenanceName = $"dsh-ng-desktop-{nameHash}-maintenance";
+        // Do not use Path.GetTempPath() here. macOS assigns TMPDIR per login
+        // session, so Finder, launchd and the pkg bootstrap could otherwise
+        // coordinate through different lease files for the same user.
+        var leaseDirectory = OperatingSystem.IsMacOS()
+            ? Path.Combine("/tmp", "dsh-ng-desktop-locks", nameHash)
+            : Path.Combine(Path.GetTempPath(), "dsh-ng-desktop-locks");
+        _macInstanceLeasePath = Path.Combine(leaseDirectory, $"{nameHash}.instance.lock");
+        _macMaintenanceLeasePath = Path.Combine(leaseDirectory, $"{nameHash}.maintenance.lock");
     }
 
     public event EventHandler<InstanceCommandRequestedEventArgs>? ActivationRequested;
@@ -59,9 +73,30 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
 
     public bool TryAcquirePrimary()
     {
-        if (_mutex is not null)
+        if (_mutex is not null || _macInstanceLease is not null || _isPrimary)
         {
             throw new InvalidOperationException("This coordinator has already attempted instance acquisition.");
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            // A primary launch must pass through the same maintenance gate as
+            // an installer. Otherwise a third client can claim the instance
+            // lease after the old client exits but before replacement commits.
+            using var maintenanceGate = TryAcquireFileLease(_macMaintenanceLeasePath, TimeSpan.Zero);
+            if (maintenanceGate is null)
+            {
+                return false;
+            }
+
+            _macInstanceLease = TryAcquireFileLease(_macInstanceLeasePath, TimeSpan.Zero);
+            if (_macInstanceLease is null)
+            {
+                return false;
+            }
+
+            StartPrimaryListener();
+            return true;
         }
 
         var gate = GetMaintenanceSemaphore();
@@ -80,9 +115,7 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
                 return false;
             }
 
-            _isPrimary = true;
-            _listenerCancellation = new CancellationTokenSource();
-            _listenerTask = Task.Run(() => ListenAsync(_listenerCancellation.Token));
+            StartPrimaryListener();
             return true;
         }
         finally
@@ -118,27 +151,41 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
             throw new ArgumentOutOfRangeException(nameof(timeout));
         }
 
-        var gate = GetMaintenanceSemaphore();
-        var gateDeadline = DateTimeOffset.UtcNow + timeout;
-        var acquired = false;
-        while (DateTimeOffset.UtcNow < gateDeadline)
+        if (OperatingSystem.IsMacOS())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (gate.WaitOne(0))
+            _macMaintenanceLease = await AcquireFileLeaseAsync(_macMaintenanceLeasePath, timeout, cancellationToken).ConfigureAwait(false);
+            if (_macMaintenanceLease is null)
             {
-                acquired = true;
-                break;
+                return InstallMaintenanceAcquisition.Failure("安装维护锁在限定时间内不可用，可能已有其他安装事务正在运行。");
             }
 
-            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            Interlocked.Exchange(ref _maintenanceGateHeld, 1);
         }
-
-        if (!acquired)
+        else
         {
-            return InstallMaintenanceAcquisition.Failure("安装维护锁在限定时间内不可用，可能已有其他安装事务正在运行。");
+            var gate = GetMaintenanceSemaphore();
+            var gateDeadline = DateTimeOffset.UtcNow + timeout;
+            var acquired = false;
+            while (DateTimeOffset.UtcNow < gateDeadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (gate.WaitOne(0))
+                {
+                    acquired = true;
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!acquired)
+            {
+                return InstallMaintenanceAcquisition.Failure("安装维护锁在限定时间内不可用，可能已有其他安装事务正在运行。");
+            }
+
+            Interlocked.Exchange(ref _maintenanceGateHeld, 1);
         }
 
-        Interlocked.Exchange(ref _maintenanceGateHeld, 1);
         try
         {
             var request = await RequestInstallMaintenanceAsync(cancellationToken).ConfigureAwait(false);
@@ -171,7 +218,7 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
     }
 
     /// <summary>
-    /// Attempts to own the same per-user mutex used by the desktop host. An
+    /// Attempts to own the same per-user instance lease used by the desktop host. An
     /// uninstall helper holds this lease from the point at which no running
     /// host remains until cleanup ends, preventing a fresh client from opening
     /// files while they are being removed.
@@ -181,6 +228,33 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
         if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            _macMaintenanceLease = TryAcquireFileLease(_macMaintenanceLeasePath, timeout);
+            if (_macMaintenanceLease is null)
+            {
+                return false;
+            }
+
+            Interlocked.Exchange(ref _maintenanceGateHeld, 1);
+            try
+            {
+                _macInstanceLease = TryAcquireFileLease(_macInstanceLeasePath, timeout);
+                if (_macInstanceLease is not null)
+                {
+                    return true;
+                }
+
+                ReleaseMaintenanceGate();
+                return false;
+            }
+            catch
+            {
+                ReleaseMaintenanceGate();
+                throw;
+            }
         }
 
         var gate = GetMaintenanceSemaphore();
@@ -263,6 +337,8 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
         // ReleaseMutex here: async host shutdown is permitted to continue on
         // a different thread than the one that acquired the mutex.
         _mutex?.Dispose();
+        _macInstanceLease?.Dispose();
+        _macInstanceLease = null;
         ReleaseMaintenanceGate();
         _maintenanceSemaphore?.Dispose();
         _isPrimary = false;
@@ -325,11 +401,31 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
         return false;
     }
 
-    private Semaphore GetMaintenanceSemaphore() =>
-        _maintenanceSemaphore ??= new Semaphore(1, 1, _maintenanceName);
+    private void StartPrimaryListener()
+    {
+        _isPrimary = true;
+        _listenerCancellation = new CancellationTokenSource();
+        _listenerTask = Task.Run(() => ListenAsync(_listenerCancellation.Token));
+    }
+
+    private Semaphore GetMaintenanceSemaphore()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException("macOS uses file-based instance and maintenance leases.");
+        }
+
+        return _maintenanceSemaphore ??= new Semaphore(1, 1, _maintenanceName);
+    }
 
     private bool IsPrimaryMutexAvailable()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            using var lease = TryAcquireFileLease(_macInstanceLeasePath, TimeSpan.Zero);
+            return lease is not null;
+        }
+
         using var probe = new Mutex(initiallyOwned: false, _mutexName);
         try
         {
@@ -360,8 +456,114 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
     {
         if (Interlocked.Exchange(ref _maintenanceGateHeld, 0) == 1)
         {
-            _maintenanceSemaphore?.Release();
+            if (OperatingSystem.IsMacOS())
+            {
+                _macMaintenanceLease?.Dispose();
+                _macMaintenanceLease = null;
+            }
+            else
+            {
+                _maintenanceSemaphore?.Release();
+            }
         }
+    }
+
+    private static FileStream? TryAcquireFileLease(string path, TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        var deadline = timeout == Timeout.InfiniteTimeSpan
+            ? DateTimeOffset.MaxValue
+            : DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                if (OperatingSystem.IsMacOS())
+                {
+                    EnsureMacLeaseDirectoryPermissions(Path.GetDirectoryName(path)!);
+                }
+                // On macOS FileShare.None is the supported cross-process
+                // exclusive lease. FileStream.Lock is explicitly unsupported
+                // by the platform annotations and cannot be used here.
+                var lease = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.None);
+                if (OperatingSystem.IsMacOS())
+                {
+                    EnsureMacLeaseFilePermissions(path);
+                }
+                return lease;
+            }
+            catch (IOException) when (DateTimeOffset.UtcNow < deadline)
+            {
+                if (timeout == TimeSpan.Zero)
+                {
+                    return null;
+                }
+
+                Thread.Sleep(TimeSpan.FromMilliseconds(100));
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                return null;
+            }
+        }
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void EnsureMacLeaseDirectoryPermissions(string path)
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            File.SetUnixFileMode(
+                path,
+                UnixFileMode.UserRead |
+                UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute);
+        }
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static void EnsureMacLeaseFilePermissions(string path)
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private static async Task<FileStream?> AcquireFileLeaseAsync(
+        string path,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            return TryAcquireFileLease(path, timeout);
+        }
+
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var lease = TryAcquireFileLease(path, TimeSpan.Zero);
+            if (lease is not null)
+            {
+                return lease;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+        }
+
+        return null;
     }
 
     private sealed class MaintenanceLease(SingleInstanceCoordinator owner) : IAsyncDisposable

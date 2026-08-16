@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using DshNgDesktop.Core;
 
 namespace DshNgDesktop.Platform;
 
@@ -46,6 +47,9 @@ internal abstract class PlatformServicesBase : IPlatformServices
         Task.FromResult(PlatformOperationResult.Success());
 
     public virtual Task<PlatformOperationResult> UnregisterShortcutsAsync(string displayName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(PlatformOperationResult.Success());
+
+    public virtual Task<PlatformOperationResult> ClearWebViewDataAsync(AppPaths paths, CancellationToken cancellationToken = default) =>
         Task.FromResult(PlatformOperationResult.Success());
 }
 
@@ -286,6 +290,60 @@ internal sealed class MacOSPlatformServices : PlatformServicesBase
         return Task.FromResult(PlatformOperationResult.Success());
     }
 
+    public override async Task<PlatformOperationResult> ClearWebViewDataAsync(AppPaths paths, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        cancellationToken.ThrowIfCancellationRequested();
+        var helper = Path.Combine(paths.InstallRoot, "Contents", "MacOS", MacOSWebViewDataStore.HelperFileName);
+        if (!paths.IsPathOwnedByProduct(helper) || !File.Exists(helper))
+        {
+            return PlatformOperationResult.Failure("The macOS WebKit cleanup helper is missing from the product-owned application bundle.");
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = helper,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add("--identifier");
+            process.StartInfo.ArgumentList.Add(MacOSWebViewDataStore.Identifier.ToString("D"));
+            if (!process.Start())
+            {
+                return PlatformOperationResult.Failure("The macOS WebKit cleanup helper could not be started.");
+            }
+
+            var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var error = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            var detail = (await error.ConfigureAwait(false)).Trim();
+            if (process.ExitCode == 0)
+            {
+                return PlatformOperationResult.Success();
+            }
+
+            if (string.IsNullOrWhiteSpace(detail))
+            {
+                detail = (await output.ConfigureAwait(false)).Trim();
+            }
+
+            return PlatformOperationResult.Failure(string.IsNullOrWhiteSpace(detail)
+                ? $"The macOS WebKit cleanup helper exited with code {process.ExitCode}."
+                : detail);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return PlatformOperationResult.Failure(exception.Message);
+        }
+    }
+
     private static string GetLaunchAgentPath(string productId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(productId);
@@ -381,6 +439,12 @@ internal static partial class MacOSUserId
 
     [LibraryImport("libSystem.B.dylib", EntryPoint = "getuid")]
     private static partial uint GetUid();
+}
+
+internal static class MacOSWebViewDataStore
+{
+    public const string HelperFileName = "DshDesktop.WebKitCleanup";
+    public static readonly Guid Identifier = new("b2652613-ae3c-4ad1-9efe-1d2206998c72");
 }
 
 internal sealed class UnsupportedPlatformServices : PlatformServicesBase
@@ -625,9 +689,9 @@ internal sealed partial class MacOSProcessGroup : IPlatformProcessGroup
             return Task.FromResult(PlatformOperationResult.Failure("The DSH process group has already been disposed."));
         }
 
-        if (MacOSProcessNative.SetProcessGroup(processId, processId) != 0)
+        if (MacOSProcessNative.GetProcessGroup(processId) != processId)
         {
-            return Task.FromResult(PlatformOperationResult.Failure($"The created DSH process could not be placed in a separate process group (errno {Marshal.GetLastPInvokeError()})."));
+            return Task.FromResult(PlatformOperationResult.Failure("The created DSH process was not spawned in its own process group."));
         }
 
         _processGroupId = processId;
@@ -661,8 +725,8 @@ internal sealed partial class MacOSProcessGroup : IPlatformProcessGroup
 
     private static partial class MacOSProcessNative
     {
-        [LibraryImport("libSystem.B.dylib", EntryPoint = "setpgid", SetLastError = true)]
-        internal static partial int SetProcessGroup(int processId, int processGroupId);
+        [LibraryImport("libSystem.B.dylib", EntryPoint = "getpgid", SetLastError = true)]
+        internal static partial int GetProcessGroup(int processId);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "kill", SetLastError = true)]
         internal static partial int Kill(int processIdOrGroup, int signal);

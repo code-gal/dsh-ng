@@ -103,7 +103,9 @@ public sealed record DshCommandProbeResult(
     string? ExecutablePath,
     string? Version,
     string? Error,
-    string Remediation)
+    string Remediation,
+    string? Source = null,
+    string? ExecutionPath = null)
 {
     public bool Succeeded => ExecutablePath is not null && Version is not null && Error is null;
 }
@@ -120,12 +122,169 @@ public interface IDshExecutableValidator
     Task<DshExecutableValidationResult> ValidateAsync(CancellationToken cancellationToken = default);
 }
 
+public sealed record NodeExecutableResolution(string Command, string Path, string Source);
+
+public interface INodeExecutableResolver
+{
+    NodeExecutableResolution? Resolve(string command);
+}
+
+/// <summary>
+/// Resolves the same absolute Node.js and npx paths for terminal, Finder,
+/// package-installer and LaunchAgent environments. It never evaluates a shell
+/// profile or constructs a shell command from an environment value.
+/// </summary>
+public sealed class SystemNodeExecutableResolver : INodeExecutableResolver
+{
+    public NodeExecutableResolution? Resolve(string command)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(command);
+
+        foreach (var candidate in EnumerateCandidates(command))
+        {
+            var path = NormalizeExecutablePath(candidate.Path);
+            if (path is not null)
+            {
+                return new NodeExecutableResolution(command, path, candidate.Source);
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<(string Path, string Source)> EnumerateCandidates(string command)
+    {
+        var names = OperatingSystem.IsWindows()
+            ? new[] { $"{command}.exe", $"{command}.cmd", $"{command}.bat", command }
+            : new[] { command };
+
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                foreach (var name in names)
+                {
+                    yield return (Path.Combine(directory, name), "PATH");
+                }
+            }
+        }
+
+        if (!OperatingSystem.IsMacOS())
+        {
+            yield break;
+        }
+
+        foreach (var directory in new[] { "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/local/bin" })
+        {
+            foreach (var name in names)
+            {
+                yield return (Path.Combine(directory, name), directory == "/opt/homebrew/bin" ? "Homebrew" : "system");
+            }
+        }
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var directory in EnumerateVersionManagerDirectories(home))
+        {
+            foreach (var name in names)
+            {
+                yield return (Path.Combine(directory.Path, name), directory.Source);
+            }
+        }
+    }
+
+    private static IEnumerable<(string Path, string Source)> EnumerateVersionManagerDirectories(string home)
+    {
+        if (string.IsNullOrWhiteSpace(home))
+        {
+            yield break;
+        }
+
+        var nvmRoot = Environment.GetEnvironmentVariable("NVM_DIR");
+        if (string.IsNullOrWhiteSpace(nvmRoot) || !Path.IsPathRooted(nvmRoot))
+        {
+            nvmRoot = Path.Combine(home, ".nvm");
+        }
+
+        foreach (var directory in EnumerateChildBinDirectories(Path.Combine(nvmRoot, "versions", "node")))
+        {
+            yield return (directory, "version-manager:nvm");
+        }
+
+        foreach (var directory in new[]
+        {
+            Path.Combine(home, ".volta", "bin"),
+            Path.Combine(home, ".asdf", "shims"),
+            Path.Combine(home, ".local", "share", "mise", "shims")
+        })
+        {
+            yield return (directory, directory.Contains(".volta", StringComparison.Ordinal) ? "version-manager:volta" : "version-manager:shim");
+        }
+
+        foreach (var root in new[]
+        {
+            Path.Combine(home, ".fnm", "node-versions"),
+            Path.Combine(home, ".local", "share", "fnm", "node-versions")
+        })
+        {
+            foreach (var directory in EnumerateChildBinDirectories(root, "installation"))
+            {
+                yield return (directory, "version-manager:fnm");
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateChildBinDirectories(string root, string? suffix = "bin")
+    {
+        if (!Directory.Exists(root))
+        {
+            yield break;
+        }
+
+        string[] children;
+        try
+        {
+            children = Directory.EnumerateDirectories(root)
+                .OrderByDescending(path => path, StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        foreach (var child in children)
+        {
+            yield return suffix is null ? child : Path.Combine(child, suffix);
+        }
+    }
+
+    private static string? NormalizeExecutablePath(string candidate)
+    {
+        try
+        {
+            var absolute = Path.GetFullPath(candidate);
+            if (!Path.IsPathRooted(absolute) || !File.Exists(absolute) || Directory.Exists(absolute))
+            {
+                return null;
+            }
+
+            return absolute;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+}
+
 public sealed record DshProcessLaunchRequest(
     string NpxExecutable,
     int Port,
     string WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
-    Action<string, bool> OutputReceived);
+    Action<string, bool> OutputReceived,
+    IReadOnlyList<string>? Arguments = null);
 
 public interface IDshProcessHandle : IAsyncDisposable
 {
@@ -252,7 +411,9 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
         _options = options ?? DshSupervisorOptions.Default;
         _options.Validate();
         _executableValidator = executableValidator ?? new SystemDshExecutableValidator(_options.PrerequisiteTimeout);
-        _processLauncher = processLauncher ?? new SystemDshProcessLauncher();
+        _processLauncher = processLauncher ?? (OperatingSystem.IsMacOS()
+            ? new MacOSDshProcessLauncher()
+            : new SystemDshProcessLauncher());
         _ownsHealthProbe = healthProbe is null;
         _healthProbe = healthProbe ?? new DshHttpHealthProbe(_options.HealthRequestTimeout);
         _portReservations = portReservations ?? new TcpLoopbackPortReservationProvider();
@@ -389,6 +550,13 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
                 .ConfigureAwait(false);
         }
 
+        await _log.InformationAsync(
+                AppLogStream.Runtime,
+                "dsh-executable-resolved",
+                $"Resolved node from {executables.Node.Source} at {executables.Node.ExecutablePath} ({executables.Node.Version}); npx from {executables.Npx.Source} at {executables.Npx.ExecutablePath} ({executables.Npx.Version}).",
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
         try
         {
             Directory.CreateDirectory(_paths.NpmCacheDirectory);
@@ -437,7 +605,13 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
             excludedPorts.Add(port);
             await reservation.DisposeAsync().ConfigureAwait(false);
 
-            var started = await TryStartOnPortAsync(executables.Npx.ExecutablePath!, port, startupPolicy, cancellationToken).ConfigureAwait(false);
+            var started = await TryStartOnPortAsync(
+                    executables.Npx.ExecutablePath!,
+                    executables.Npx.ExecutionPath,
+                    port,
+                    startupPolicy,
+                    cancellationToken)
+                .ConfigureAwait(false);
             if (started.Succeeded)
             {
                 return started;
@@ -473,6 +647,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
 
     private async Task<DshStartResult> TryStartOnPortAsync(
         string npxExecutable,
+        string? executablePath,
         int port,
         DshStartupPolicy startupPolicy,
         CancellationToken cancellationToken)
@@ -487,7 +662,7 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
                     npxExecutable,
                     port,
                     _paths.LauncherWorkingDirectory,
-                    BuildDshEnvironment(),
+                    BuildDshEnvironment(executablePath),
                     (line, isError) =>
                     {
                         _ = WriteProcessOutputAsync(line, isError);
@@ -894,8 +1069,9 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
         }
     }
 
-    private IReadOnlyDictionary<string, string> BuildDshEnvironment() =>
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    private IReadOnlyDictionary<string, string> BuildDshEnvironment(string? executablePath)
+    {
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["npm_config_cache"] = _paths.NpmCacheDirectory,
             ["DSH_HOME"] = _paths.DshHomeDirectory,
@@ -903,6 +1079,14 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
             ["CI"] = "true",
             ["NO_COLOR"] = "1"
         };
+
+        if (OperatingSystem.IsMacOS() && !string.IsNullOrWhiteSpace(executablePath))
+        {
+            environment["PATH"] = executablePath;
+        }
+
+        return environment;
+    }
 
     private void ClearPrivateNpmCache()
     {
@@ -1152,8 +1336,9 @@ public sealed class DshSupervisor : IDshRuntimeSupervisor, IDshInstallationProgr
 public sealed class SystemDshExecutableValidator : IDshExecutableValidator
 {
     private readonly TimeSpan _timeout;
+    private readonly INodeExecutableResolver _resolver;
 
-    public SystemDshExecutableValidator(TimeSpan timeout)
+    public SystemDshExecutableValidator(TimeSpan timeout, INodeExecutableResolver? resolver = null)
     {
         if (timeout <= TimeSpan.Zero)
         {
@@ -1161,24 +1346,44 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
         }
 
         _timeout = timeout;
+        _resolver = resolver ?? new SystemNodeExecutableResolver();
     }
 
     public async Task<DshExecutableValidationResult> ValidateAsync(CancellationToken cancellationToken = default)
     {
-        var node = await ValidateCommandAsync("node", "请安装受支持的系统 Node.js，并将 node 加入 PATH。", cancellationToken)
+        var nodeResolution = _resolver.Resolve("node");
+        var npxResolution = _resolver.Resolve("npx");
+        var executionPath = BuildExecutionPath(nodeResolution, npxResolution);
+        var node = await ValidateCommandAsync(
+                "node",
+                "请安装受支持的系统 Node.js，并将 node 加入 PATH。",
+                nodeResolution,
+                executionPath,
+                cancellationToken)
             .ConfigureAwait(false);
-        var npx = await ValidateCommandAsync("npx", "请安装提供 npx 的 npm 发行版，并将 npx 加入 PATH。", cancellationToken)
+        var npx = await ValidateCommandAsync(
+                "npx",
+                "请安装提供 npx 的 npm 发行版，并将 npx 加入 PATH。",
+                npxResolution,
+                executionPath,
+                cancellationToken)
             .ConfigureAwait(false);
         return new DshExecutableValidationResult(node, npx);
     }
 
-    private async Task<DshCommandProbeResult> ValidateCommandAsync(string command, string remediation, CancellationToken cancellationToken)
+    private async Task<DshCommandProbeResult> ValidateCommandAsync(
+        string command,
+        string remediation,
+        NodeExecutableResolution? resolution,
+        string? executionPath,
+        CancellationToken cancellationToken)
     {
-        var executable = FindExecutable(command);
-        if (executable is null)
+        if (resolution is null)
         {
-            return new DshCommandProbeResult(command, null, null, $"在 PATH 中找不到 {command}。", remediation);
+            return new DshCommandProbeResult(command, null, null, $"在当前 PATH、系统/Homebrew 位置和受支持的用户版本管理器目录中找不到 {command}。", remediation);
         }
+
+        var executable = resolution.Path;
 
         try
         {
@@ -1193,10 +1398,15 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
                     CreateNoWindow = true
                 }
             };
+            if (OperatingSystem.IsMacOS() && !string.IsNullOrWhiteSpace(executionPath))
+            {
+                process.StartInfo.Environment["PATH"] = executionPath;
+            }
+
             process.StartInfo.ArgumentList.Add("--version");
             if (!process.Start())
             {
-                return new DshCommandProbeResult(command, executable, null, $"无法启动 {command}。", remediation);
+                return new DshCommandProbeResult(command, executable, null, $"无法启动 {command}。", remediation, resolution.Source, executionPath);
             }
 
             var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
@@ -1209,45 +1419,58 @@ public sealed class SystemDshExecutableValidator : IDshExecutableValidator
             if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
             {
                 var detail = string.IsNullOrWhiteSpace(error) ? $"{command} --version 以退出代码 {process.ExitCode} 结束。" : error;
-                return new DshCommandProbeResult(command, executable, null, detail, remediation);
+                return new DshCommandProbeResult(command, executable, null, detail, remediation, resolution.Source, executionPath);
             }
 
-            return new DshCommandProbeResult(command, executable, output, null, remediation);
+            return new DshCommandProbeResult(command, executable, output, null, remediation, resolution.Source, executionPath);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return new DshCommandProbeResult(command, executable, null, $"{command} --version 执行超时。", remediation);
+            return new DshCommandProbeResult(command, executable, null, $"{command} --version 执行超时。", remediation, resolution.Source, executionPath);
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
-            return new DshCommandProbeResult(command, executable, null, $"无法执行 {command}：{exception.Message}", remediation);
+            return new DshCommandProbeResult(command, executable, null, $"无法执行 {command}：{exception.Message}", remediation, resolution.Source, executionPath);
         }
     }
 
-    private static string? FindExecutable(string command)
+    private static string? BuildExecutionPath(NodeExecutableResolution? node, NodeExecutableResolution? npx)
     {
-        var candidates = OperatingSystem.IsWindows()
-            ? new[] { $"{command}.exe", $"{command}.cmd", $"{command}.bat", command }
-            : new[] { command };
-        var rawPath = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(rawPath))
+        if (!OperatingSystem.IsMacOS())
         {
             return null;
         }
 
-        foreach (var directory in rawPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var directories = new List<string>();
+        AddDirectory(Path.GetDirectoryName(node?.Path));
+        AddDirectory(Path.GetDirectoryName(npx?.Path));
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var directory in new[]
         {
-            foreach (var candidate in candidates)
-            {
-                var executable = Path.Combine(directory, candidate);
-                if (File.Exists(executable))
-                {
-                    return executable;
-                }
-            }
+            Path.Combine(home, ".asdf", "bin"),
+            Path.Combine(home, ".local", "bin"),
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/opt/local/bin"
+        })
+        {
+            AddDirectory(directory);
         }
 
-        return null;
+        return string.Join(Path.PathSeparator, directories);
+
+        void AddDirectory(string? directory)
+        {
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                Directory.Exists(directory) &&
+                !directories.Contains(directory, StringComparer.Ordinal))
+            {
+                directories.Add(directory);
+            }
+        }
     }
 }
 
@@ -1265,13 +1488,19 @@ public sealed class SystemDshProcessLauncher : IDshProcessLauncher
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        startInfo.ArgumentList.Add("--yes");
-        startInfo.ArgumentList.Add("@deepseek-ai/dsh");
-        startInfo.ArgumentList.Add("web");
-        startInfo.ArgumentList.Add("--host");
-        startInfo.ArgumentList.Add("127.0.0.1");
-        startInfo.ArgumentList.Add("--port");
-        startInfo.ArgumentList.Add(request.Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        foreach (var argument in request.Arguments ??
+            [
+                "--yes",
+                "@deepseek-ai/dsh",
+                "web",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                request.Port.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            ])
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
         foreach (var pair in request.Environment)
         {
             startInfo.Environment[pair.Key] = pair.Value;
