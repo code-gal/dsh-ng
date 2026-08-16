@@ -60,10 +60,15 @@ artifacts/installer/DSH-Desktop-Setup-v0.9.1-osx-arm64-aot.pkg.sha256
 
 ## 发布与人工验收
 
-1. 在 [`CHANGELOG.md`](../CHANGELOG.md) 的 `Unreleased` 下整理用户可见更新，决定 major、minor 或 patch，并创建同版本小节。
-2. 在真实 Windows `win-x64` 与 macOS `osx-arm64` 上分别从最终安装包完成安装、首次 DSH 供应、托盘、自启动、退出、卸载、残留、SHA-256 和安全提示验收。
-3. 创建并推送标签，例如 `desktop-v0.9.1`。
-4. 查看 `DSH Desktop Release` 工作流和生成的 GitHub Release。失败只能通过新提交与新版本修复，不能替换已发布标签或附件。
+1. 在 [`CHANGELOG.md`](../CHANGELOG.md) 的 `Unreleased` 下整理用户可见更新，决定 major、minor 或 patch，并创建同版本小节；提交该变更。
+2. 将发布提交推送到承载 GitHub Actions 的 GitHub 远程分支。须显式执行 `git push github <branch>`；用 `git log github/<branch>..HEAD` 确认没有待推送的发布提交。
+3. 在真实 Windows `win-x64` 与 macOS `osx-arm64` 上分别从最终安装包完成安装、首次 DSH 供应、托盘、自启动、退出、卸载、残留、SHA-256 和安全提示验收。
+4. 在该发布提交上创建并推送标签，例如 `git tag desktop-v0.9.11 <release-commit>` 和 `git push github refs/tags/desktop-v0.9.11`。
+5. 查看 `DSH Desktop Release` 工作流和生成的 GitHub Release。失败只能通过新提交与新版本修复，不能替换已发布标签或附件。
+
+### 标签误推恢复（仅限尚未创建 GitHub Release）
+
+若标签先于 Changelog 推送，`prepare` 作业会失败。补齐并提交 Changelog 后，先推送发布提交到 GitHub；然后用 `git ls-remote --tags github refs/tags/desktop-v0.9.11` 确认远端标签已经删除。远端删除不会删除本地标签，所以本地再次执行 `git tag desktop-v0.9.11` 会报“already exists”。用 `git show --no-patch desktop-v0.9.11` 检查现有标签；必要时以 `git tag -f desktop-v0.9.11 <release-commit>` 将其移到正确提交，再以 `git push github refs/tags/desktop-v0.9.11` 重新触发工作流。若 Release 或任一附件已创建，禁止删除、移动或强推同名标签，必须使用新版本。
 
 Windows SmartScreen 与 macOS Gatekeeper 的警告或首次阻止属于未签名社区预览的预期行为。只应在来源和 SHA-256 已确认后按系统提供的单次人工打开流程继续；不要导入根证书或发布者证书，也不要关闭 Gatekeeper、SIP 或其他全局安全保护。
 

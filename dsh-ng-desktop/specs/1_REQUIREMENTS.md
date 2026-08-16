@@ -16,7 +16,8 @@
 - 正式安装包只通过项目 GitHub Releases 发布，由用户手动下载和安装；不规划 Microsoft Store、WinGet 或客户端内更新渠道。
 - GitHub Release 必须提供版本化产物、SHA-256、系统与 Node 前置条件和签名状态；已发布的同名版本文件不得替换。Windows 和 macOS 当前均允许发布明确标记为“未签名社区预览”的安装包：Windows Release 必须说明 SmartScreen 风险，macOS Release 必须说明 Gatekeeper 警告或拦截风险、一次性人工打开要求及 SHA-256 校验步骤；不得要求用户导入根证书或发布者证书，也不得指导用户全局关闭系统安全保护。
 - 本仓库的每个可发行子项目独立维护版本和 GitHub Release；桌面客户端的 Release 标签固定为 `desktop-v<SemVer>`，例如 `desktop-v0.9.1`，不得使用会与插件或其他子项目冲突的仓库级裸版本标签。
-- `dsh-ng-desktop/CHANGELOG.md` 是发行更新说明的唯一来源。维护者自主选择 SemVer 的 major、minor 或 patch，并在推送标签前将同版本条目及精炼的用户可见更新写入 Changelog；CI 不根据提交自动推断、修改或提交版本号。标签必须指向包含同版本 Changelog 条目的提交。
+- `dsh-ng-desktop/CHANGELOG.md` 是发行更新说明的唯一来源。维护者自主选择 SemVer 的 major、minor 或 patch，并在推送标签前将同版本条目及精炼的用户可见更新写入 Changelog；CI 不根据提交自动推断、修改或提交版本号。标签必须指向包含同版本 Changelog 条目的提交，并且该提交必须先推送到承载 GitHub Actions 的 GitHub 远程分支；日常默认推送到其他远程（例如 Gitea）不得替代此步骤。
+- 标签推送失败或 GitHub Actions 在创建 Release 前因 Changelog 缺失而失败时，维护者必须先补齐并提交 Changelog、推送该提交到 GitHub，并确认 GitHub 上的同名标签已删除；远端删除不会删除本地标签。确认远端标签不存在后，可将本地标签移到正确的发布提交并重新推送，以重新触发工作流。若 GitHub Release 或附件已经创建，则版本标签和附件不可替换，必须通过新版本修复。
 - 维护者必须在推送发行标签前，于真实 Windows `win-x64` 和 macOS `osx-arm64` 环境分别完成人在环安装、运行和卸载验收。推送 `desktop-v<SemVer>` 标签后，GitHub Actions 分别在干净的 Windows 与 macOS Runner 上重建支持的安装包和 SHA-256；仅当全部构建成功时，发布任务才创建同名 GitHub Release、上传附件，并写入对应 Changelog 条目、上一个桌面标签以来的提交数量与比较链接。Release 不逐条罗列每次提交或自动生成详细提交日志。
 - 当前自动发布只生成明确标记的未签名社区预览，不向 GitHub Actions 提供签名私钥、Apple ID 或公证凭据。未来启用正式代码签名或公证时，必须改为受控签名环境或经过审批的签名任务，不能把长期签名凭据交给普通 CI Runner。
 - 本地构建安装包及校验值只写入 `dsh-ng-desktop/artifacts/installer/`，该目录属于本地发行物，绝不进入 Git 源码。

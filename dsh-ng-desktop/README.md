@@ -102,14 +102,17 @@ bash Installer/Packaging/macos/build-installer.sh --version v0.9.1
 
 ## 发布流程
 
-维护者先在 [`CHANGELOG.md`](CHANGELOG.md) 中添加精炼的用户可见更新，并自主决定 SemVer 的 major、minor 或 patch。标签版本必须和该 Changelog 条目一致。然后在真实 Windows `win-x64` 与 macOS `osx-arm64` 环境分别对最终版本完成人在环安装、首次供应、托盘、自启动、窗口隐藏/恢复、退出、卸载、残留与安全提示检查。验收通过后推送独立桌面标签：
+维护者先在 [`CHANGELOG.md`](CHANGELOG.md) 中添加精炼的用户可见更新并提交，自主决定 SemVer 的 major、minor 或 patch。标签版本必须和该 Changelog 条目一致。必须将该发布提交先推送到承载 GitHub Actions 的 GitHub 远程；再在真实 Windows `win-x64` 与 macOS `osx-arm64` 环境分别对最终版本完成人在环安装、首次供应、托盘、自启动、窗口隐藏/恢复、退出、卸载、残留与安全提示检查。验收通过后创建并推送独立桌面标签：
 
 ```powershell
-git tag desktop-v0.9.1
-git push github desktop-v0.9.1
+git push github main
+git tag desktop-v0.9.11 <release-commit>
+git push github refs/tags/desktop-v0.9.11
 ```
 
-上例假定 GitHub 远程名为 `github`；请按本地实际远程名替换。只有推送到已启用 GitHub Actions 的 GitHub 仓库，`desktop-v*` 标签才会触发工作流。工作流先校验 Changelog 条目，再在干净的 Windows Runner 重建 x64 AOT/.NET 双安装器、在 Apple Silicon macOS Runner 重建 ARM64 AOT `pkg`，并生成 SHA-256。仅当两个构建均成功时，它才创建未签名社区预览 Release、上传六个附件，并写入 Changelog 更新、提交数量与比较链接；不会自动决定版本号或罗列详细提交日志。维护者不再手工上传安装包；自动构建不能替代推送标签前的真实机器验收。
+上例假定 GitHub 远程名为 `github`、发布提交已在 `main`；请按本地实际远程名和分支替换。只有推送到已启用 GitHub Actions 的 GitHub 仓库，`desktop-v*` 标签才会触发工作流。工作流先校验 Changelog 条目，再在干净的 Windows Runner 重建 x64 AOT/.NET 双安装器、在 Apple Silicon macOS Runner 重建 ARM64 AOT `pkg`，并生成 SHA-256。仅当两个构建均成功时，它才创建未签名社区预览 Release、上传六个附件，并写入 Changelog 更新、提交数量与比较链接；不会自动决定版本号或罗列详细提交日志。维护者不再手工上传安装包；自动构建不能替代推送标签前的真实机器验收。
+
+如果标签先于 Changelog 误推，且 GitHub Release 尚未创建：先补齐并提交 Changelog，再将该提交推送到 GitHub；在 GitHub 删除失败标签后，例如用 `git ls-remote --tags github refs/tags/desktop-v0.9.11` 确认输出为空。删除远端标签不会删除本地标签，因而 `git tag desktop-v0.9.11` 会报告“already exists”。先用 `git show --no-patch desktop-v0.9.11` 检查其目标；若不是正确的发布提交，再执行 `git tag -f desktop-v0.9.11 <release-commit>`，最后执行 `git push github refs/tags/desktop-v0.9.11`。如果 GitHub Release 或附件已经创建，绝不可重用该标签，应发布新的版本号。
 
 ## Spec Coding
 

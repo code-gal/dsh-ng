@@ -76,7 +76,7 @@
 - [x] **M6.2 人工批准实施计划**：维护者已批准 M6.1 计划并授权按其顺序执行。
 - [x] **M6.3 macOS `osx-arm64` 未签名安装包（执行模型）**：macOS 打包入口已收敛为单一 Native AOT `pkg`，已移除签名与公证输入及命令，可生成可复现的 SHA-256，并通过显式安装参数将 SemVer 和 AOT 构建形态写入 macOS 安装清单；保留当前用户安装事务。
 - [x] **M6.4 跨平台构建与发布（执行模型）**：已实现 Changelog/标签校验、Windows `win-x64` 双安装器和 macOS `osx-arm64` AOT 包的并行构建，以及仅在全部成功后创建 Release 的汇总任务；Windows 双安装器已在隔离目录完成真实构建和 SHA-256 复核。
-- [x] **M6.5 发行说明与文档（执行模型）**：已添加桌面项目 Changelog；Release 正文使用精炼 Changelog、提交数量和比较链接；已更新打包文档，并在根 README 引用 `dsh-ng-desktop-install-white.png`、在项目 README 引用其余三张截图。
+- [x] **M6.5 发行说明与文档（执行模型）**：已添加桌面项目 Changelog；Release 正文使用精炼 Changelog、提交数量和比较链接；已更新打包文档、GitHub 专用的提交/标签推送顺序和 Release 创建前的误推恢复规则，并在根 README 引用 `dsh-ng-desktop-install-white.png`、在项目 README 引用其余三张截图。
 - [x] **M6.6 验收门禁（强模型）**：已独立核对实现、工作流最小权限、产物命名、SHA-256、未签名风险说明、Changelog/标签一致性和自动检查证据；项目编译、Bash 语法检查、Windows 双安装器真实构建与 SHA-256 复核均通过。未覆盖风险为真实 Apple Silicon 安装与首次实际 GitHub 标签运行，保留给 M6.7/M6.8。
 - [x] **M6.7 人工验收与发布批准**：在真实 Windows `win-x64` 和 macOS `osx-arm64` 机器完成安装、运行、托盘、卸载和安全提示验收；维护者确认结果并选择版本号后才允许推送发行标签。
 - [ ] **M6.8 首次跨平台发行验证**：推送经批准的 `desktop-v<SemVer>` 标签，确认 Release 只含 Windows `win-x64` AOT/.NET 安装器、macOS `osx-arm64` AOT `pkg`、各自 SHA-256、Changelog 更新说明和提交范围摘要。
