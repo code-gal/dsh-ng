@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DshDesktop.SetupHost</AssemblyName>
+    <RootNamespace>DshDesktop.SetupHost</RootNamespace>
+    <ApplicationIcon>..\Assets\dsh.ico</ApplicationIcon>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>true</PublishTrimmed>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <DshSetupPayloadArchive Condition="'$(DshSetupPayloadArchive)' == ''"></DshSetupPayloadArchive>
+    <DshSetupPayloadManifest Condition="'$(DshSetupPayloadManifest)' == ''"></DshSetupPayloadManifest>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(DshSetupPayloadArchive)' != '' and '$(DshSetupPayloadManifest)' != ''">
+    <EmbeddedResource Include="$(DshSetupPayloadArchive)" LogicalName="DshDesktop.SetupHost.PayloadArchive" />
+    <EmbeddedResource Include="$(DshSetupPayloadManifest)" LogicalName="DshDesktop.SetupHost.PayloadManifest" />
+  </ItemGroup>
+
+  <Target Name="ValidateEmbeddedPayload" BeforeTargets="PrepareForBuild" Condition="'$(DshSetupPayloadArchive)' != '' or '$(DshSetupPayloadManifest)' != ''">
+    <Error Condition="'$(DshSetupPayloadArchive)' == '' or '$(DshSetupPayloadManifest)' == ''" Text="DshSetupPayloadArchive and DshSetupPayloadManifest must be supplied together." />
+    <Error Condition="!Exists('$(DshSetupPayloadArchive)')" Text="The SetupHost payload archive does not exist: $(DshSetupPayloadArchive)" />
+    <Error Condition="!Exists('$(DshSetupPayloadManifest)')" Text="The SetupHost payload manifest does not exist: $(DshSetupPayloadManifest)" />
+  </Target>
+
+</Project>

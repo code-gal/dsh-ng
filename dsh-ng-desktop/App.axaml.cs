@@ -32,7 +32,7 @@ internal sealed class App : Application
             desktop.Exit += Desktop_OnExit;
 
             var bootstrap = SetupApplicationBootstrap.Current;
-            if (!bootstrap.ForceSetup && SetupLocations.IsCurrentProcessInstalled(bootstrap.Paths))
+            if (bootstrap.RunDesktopHost)
             {
                 StartDesktopHost(desktop, bootstrap, setupRuntime: null, bootstrap.Background);
             }
@@ -54,8 +54,9 @@ internal sealed class App : Application
                 {
                     if (_desktopRuntime is null)
                     {
-                        bootstrap.StartInstalledClientAfterExit = bootstrap.InstallerSession &&
-                            setupRuntime.Coordinator.Result is { Succeeded: true };
+                        bootstrap.InstallerSessionSucceeded = bootstrap.InstallerSession
+                            ? setupRuntime.Coordinator.Result is { Succeeded: true }
+                            : null;
                         desktop.Shutdown();
                     }
                 };

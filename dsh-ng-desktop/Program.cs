@@ -26,7 +26,9 @@ internal static class Program
         var installRoot = ReadOption(args, "--install-root") ?? SetupLocations.GetDefaultInstallRoot();
         var payloadDirectory = ReadOption(args, "--payload");
         var paths = AppPaths.CreateDefault(installRoot);
-        var installerSession = args.Any(argument => string.Equals(argument, "--installer-session", StringComparison.OrdinalIgnoreCase));
+        var installRequested = HasFlag(args, "--install");
+        var installerSession = HasFlag(args, "--installer-session");
+        var developmentMode = HasFlag(args, "--development");
         if (args.Any(argument => string.Equals(argument, "--uninstall-finalize", StringComparison.OrdinalIgnoreCase)))
         {
             RunUninstallFinalize(paths);
@@ -39,12 +41,31 @@ internal static class Program
             return;
         }
 
+        var installationLaunch = ResolveInstallationLaunch(installRequested, installerSession, payloadDirectory);
+        if (installationLaunch == InstallationLaunch.Invalid ||
+            (developmentMode && installationLaunch == InstallationLaunch.Setup))
+        {
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var runDesktopHost = installationLaunch == InstallationLaunch.None &&
+            (developmentMode || SetupLocations.IsCurrentProcessInstalled(paths));
+        if (!runDesktopHost && installationLaunch != InstallationLaunch.Setup)
+        {
+            // DshNgDesktop.exe is an installed-client entry point. A source
+            // build must opt in with --development; it must never infer an
+            // installer role merely because its manifest is absent.
+            Environment.ExitCode = 1;
+            return;
+        }
+
         var bootstrap = new SetupApplicationBootstrap(
             paths,
             payloadDirectory,
-            args.Any(argument => string.Equals(argument, "--install", StringComparison.OrdinalIgnoreCase)),
-            args.Any(argument => string.Equals(argument, "--background", StringComparison.OrdinalIgnoreCase)),
-            installerSession);
+            HasFlag(args, "--background"),
+            installerSession,
+            runDesktopHost);
         SetupApplicationBootstrap.Configure(bootstrap);
 
         SingleInstanceCoordinator? instance = null;
@@ -72,13 +93,9 @@ internal static class Program
             instance?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
 
-        if (bootstrap.StartInstalledClientAfterExit)
+        if (installerSession)
         {
-            StartInstalledClient(paths);
-        }
-        else if (installerSession)
-        {
-            Environment.ExitCode = 1;
+            Environment.ExitCode = bootstrap.InstallerSessionSucceeded == true ? 0 : 1;
         }
     }
 
@@ -95,33 +112,6 @@ internal static class Program
         var report = doctor.RunAsync().GetAwaiter().GetResult();
         Console.Out.WriteLine(JsonSerializer.Serialize(report, EnvironmentDiagnosticJsonContext.Default.EnvironmentDiagnosticReport));
         Environment.ExitCode = report.HasErrors ? 1 : 0;
-    }
-
-    private static void StartInstalledClient(AppPaths paths)
-    {
-        var executable = Path.Combine(paths.InstallRoot, $"{typeof(Program).Assembly.GetName().Name}.exe");
-        if (!File.Exists(executable))
-        {
-            Environment.ExitCode = 1;
-            return;
-        }
-
-        try
-        {
-            if (Process.Start(new ProcessStartInfo
-                {
-                    FileName = executable,
-                    UseShellExecute = true,
-                    WorkingDirectory = paths.InstallRoot
-                }) is null)
-            {
-                Environment.ExitCode = 1;
-            }
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
-        {
-            Environment.ExitCode = 1;
-        }
     }
 
     private static void ActivateMainWindow()
@@ -158,21 +148,67 @@ internal static class Program
 
     private static string? ReadOption(IReadOnlyList<string> args, string option)
     {
-        for (var index = 0; index < args.Count - 1; index++)
+        string? result = null;
+        for (var index = 0; index < args.Count; index++)
         {
             if (string.Equals(args[index], option, StringComparison.OrdinalIgnoreCase))
             {
+                if (result is not null)
+                {
+                    throw new ArgumentException($"The {option} option may only be supplied once.");
+                }
+
+                if (index == args.Count - 1)
+                {
+                    throw new ArgumentException($"The {option} option requires a directory path.");
+                }
+
                 var value = args[index + 1];
                 if (string.IsNullOrWhiteSpace(value) || value.StartsWith("--", StringComparison.Ordinal))
                 {
                     throw new ArgumentException($"The {option} option requires a directory path.");
                 }
 
-                return Path.GetFullPath(value);
+                result = Path.GetFullPath(value);
             }
         }
 
-        return null;
+        return result;
+    }
+
+    private static bool HasFlag(IEnumerable<string> args, string flag)
+    {
+        var count = args.Count(argument => string.Equals(argument, flag, StringComparison.OrdinalIgnoreCase));
+        if (count > 1)
+        {
+            throw new ArgumentException($"The {flag} option may only be supplied once.");
+        }
+
+        return count == 1;
+    }
+
+    private static InstallationLaunch ResolveInstallationLaunch(bool installRequested, bool installerSession, string? payloadDirectory)
+    {
+        if (!installRequested && !installerSession && payloadDirectory is null)
+        {
+            return InstallationLaunch.None;
+        }
+
+        // The Windows transport host is the sole caller that may request the
+        // installer session. macOS has its own signed package bootstrap and
+        // still supplies the same explicit --install plus --payload boundary.
+        var validWindowsSession = OperatingSystem.IsWindows() && installRequested && installerSession && payloadDirectory is not null;
+        var validMacOSSession = OperatingSystem.IsMacOS() && installRequested && !installerSession && payloadDirectory is not null;
+        return validWindowsSession || validMacOSSession
+            ? InstallationLaunch.Setup
+            : InstallationLaunch.Invalid;
+    }
+
+    private enum InstallationLaunch
+    {
+        None,
+        Setup,
+        Invalid
     }
 
     private static void StartUninstallHelper(AppPaths paths)

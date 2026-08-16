@@ -10,8 +10,8 @@
 - **进程启动**：系统已有的 Node.js 与 npx；不携带私有 Node.js。
 - **AOT 发布**：各目标平台独立的 Native AOT、自包含安装产物；Native AOT 是硬性准入条件。
 - **.NET 依赖发布**：Windows 额外提供框架依赖安装产物，要求目标系统已有匹配的 .NET Desktop Runtime；源码开发同样使用框架依赖构建。
-- **发行渠道**：仅通过 GitHub Releases 发布版本化安装包、校验值和签名信息。
-- **平台优先级**：先完成 Windows，再以相同接口实现 macOS。
+- **发行渠道**：仅通过 GitHub Releases 发布版本化安装包、校验值和签名状态；当前 Windows 可发布醒目标记的未签名社区预览，macOS 不生成项目发行安装包。
+- **平台范围**：Windows `win-x64` 是唯一发布和验收目标；macOS 仅保留兼容性实现，供外部开发者自行构建验证。
 
 ## 2. Native AOT 契约
 
@@ -28,8 +28,8 @@
 
 - **AOT 模式**：桌面客户端使用 `PublishAot=true`、self-contained，按 RID 生成本机负载；Windows SetupHost 同样为 AOT、自包含。
 - **.NET 依赖模式**：桌面客户端使用 `PublishAot=false`、`SelfContained=false`，复用相同功能、安装器事务和验收用例，要求目标机器安装匹配的 .NET Desktop Runtime；Windows SetupHost 仍为 AOT、自包含，并在启动客户端负载前检查运行时。
-- **源码模式**：开发者使用 .NET SDK 执行普通 `dotnet build`、`dotnet run` 和测试。
-- Native AOT 必须在目标操作系统构建和验证，至少覆盖 `win-x64`、`win-arm64`、`osx-x64` 与 `osx-arm64`。
+- **源码模式**：开发者使用 .NET SDK 执行普通 `dotnet build`、`dotnet run -- --development` 和测试；`--development` 显式声明非安装目录的开发运行期。
+- Native AOT 的项目验证范围固定为本机 `win-x64`；不维护 `win-arm64` 或 macOS 的 RID 构建矩阵。
 - 普通编译成功不能代替 Native AOT 发布验证；安装器、托盘、平台互操作和 `NativeWebView` 必须由真实 AOT 产物执行冒烟测试。
 
 ## 3. 总体边界
@@ -40,7 +40,7 @@
 2. **安装器生命周期**：由临时负载中的 Avalonia 客户端显示唯一安装界面，部署客户端文件、供应 DSH、健康检查、提交或回滚安装事务。
 3. **桌面客户端生命周期**：单实例运行、启动和停止 DSH、承载 WebView、托盘驻留、处理自启动和卸载协作。
 
-Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状态机、日志和 DSH 调度逻辑共享；文件部署、自启动、进程组、卸载和签名由平台适配层负责。
+Windows `win-x64` 产出安装器和应用包。安装流程、状态机、日志和 DSH 调度逻辑保持跨平台可复用；macOS 平台适配代码只作为兼容性实现，不产出、发布或验证项目发行物。
 
 ## 4. 安装事务状态机
 
@@ -67,6 +67,7 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 - 安装包负载目录与目标 `InstallRoot` 必须不同。`IClientDeployment` 先在目标目录的同级临时目录完整复制负载，再原子移动到受管 `InstallRoot`；已存在的目标目录不覆盖，避免失败安装破坏已提交的客户端。
 - Windows SetupHost 单文件内只保存一份压缩客户端发布负载。它将该负载解压到本次运行独占的 staging 目录，使用同一目录同时作为 Avalonia 安装引导的启动闭包和 `IClientDeployment` 的源 payload，避免重复嵌入客户端。
 - SetupHost 是无控制台 `WinExe`，不引用 Avalonia，不通过 IExpress、`cmd.exe`、PowerShell 或 shell 关联启动客户端。它以直接子进程方式传入 `--install --installer-session --payload <staging>`，持有进程句柄并等待退出；只有子进程结束后才能清理 staging。
+- `DshNgDesktop.exe` 只有在有效的显式安装会话、已验证的受管安装目录，或带 `--development` 的源码宿主三种角色之一时才可启动；普通无参数启动绝不因缺少清单或执行目录而转入安装事务。
 - SetupHost 解压每个条目前必须规范化目标路径并验证其仍位于 staging 根目录内，拒绝绝对路径、父目录穿越、符号链接和其他重解析点。启动前必须验证清单中的文件长度和 SHA-256，至少确认主程序及其声明的全部原生运行库存在。
 - SetupHost 不复制产品文件、不注册自启动或卸载入口、不启动 DSH，也不解释安装事务的业务阶段；这些行为仍由 `SetupCoordinator` 独占。它只在负载校验、解压或子进程创建失败时显示系统原生错误对话框。
 - Avalonia 安装引导以退出码向 SetupHost 报告结果：提交成功且用户关闭完成页后返回 `0`；失败、停止或回滚完成后返回非零。成功时 SetupHost 先清理 staging，再从受管 `InstallRoot` 启动已安装客户端；失败时只清理 staging 并原样返回失败码。
@@ -203,23 +204,20 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 安装器、主程序、卸载器共享产品 ID 和安装清单。
 - 卸载器在应用退出后删除剩余文件，不使用应用本体自删或按名称杀进程。
 - 卸载入口从安装目录复制最小卸载助手到临时目录；助手向现有实例发送卸载请求并在限定时间内等待退出。只有不存在现有实例或已观察到其互斥体释放后，才执行清理。
-- 每个 Windows 版本发布 `win-x64` AOT 和 .NET 依赖安装器，并验证 `win-arm64` AOT 产物；文件名以 `-aot` 或 `-dotnet` 明确区分构建形态。
+- 每个 Windows 版本只发布和验证本机 `win-x64` AOT 与 .NET 依赖安装器；文件名以 `-aot` 或 `-dotnet` 明确区分构建形态。
 
 ### 7.2 macOS
 
-- 分别构建 Apple Silicon 与 Intel 的 AOT 和 .NET 依赖产物，并完成签名、公证和安装器封装；文件名以 `-aot` 或 `-dotnet` 明确区分构建形态。
-- 正式安装器执行与 Windows 相同的供应事务；不把拖拽 `.app` 视为完整安装流程。
-- 使用用户会话的 Service Management (`launchctl` LaunchAgent) 注册和注销登录项；plist 只能引用已提交的 app bundle，并以产品 ID 作为唯一 label。
-- 提供明确的完整卸载入口，清除 app bundle、Application Support、Caches 和 WebKit 数据存储。
-- Native AOT 分别在 Intel 与 Apple Silicon 构建环境生成；非 AOT、自包含安装器使用相同签名、公证和安装事务。
+- macOS 代码仅保留平台接口、运行时与 UI 的兼容性实现，不生成安装器、签名/公证包或 GitHub Release 附件。
+- 不维护 Intel、Apple Silicon 或 .NET 依赖的项目构建/验证矩阵；外部开发者可自行从源码构建和验证，结果不构成项目发行准入。
 
 ### 7.3 GitHub Releases
 
 - GitHub Release 是唯一正式下载入口，不创建 Microsoft Store、WinGet 或客户端更新清单。
-- 每个 Windows 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。各平台和架构的 Native AOT 安装器仍为正式准入产物。
-- Release 同时提供 SHA-256 校验值、变更说明、系统与 Node 前置条件、签名或公证说明。
+- 每个 Windows `win-x64` 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。macOS 不上传安装包。
+- Release 同时提供 SHA-256 校验值、变更说明、系统与 Node 前置条件和签名状态。未签名 Windows 社区预览必须明确标记 SmartScreen 风险、校验步骤和“不得导入根证书”。
 - 正式发行采用目标操作系统上的本机构建与手动上传。桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
-- 当前不包含自动发布的 GitHub Actions 工作流。未来如加入 CI，只可作为不持有签名私钥的构建/测试门禁，并以路径过滤和 `desktop-v*` 标签限定到本子项目；它不能代替目标机器上的安装、卸载和签名验收。
+- 当前不包含自动发布的 GitHub Actions 工作流。未来如加入 CI，只可作为不持有签名私钥的构建/测试门禁，并以路径过滤和 `desktop-v*` 标签限定到本子项目；它不能代替目标机器上的安装、卸载、签名或未签名社区预览风险验收。
 - 客户端不查询 GitHub Release，也不提示或安装客户端更新；用户自行获取新版本。
 
 ## 8. 日志与错误
@@ -237,4 +235,4 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 删除操作只能针对 `InstallManifest` 记录且验证位于产品根目录内的路径。
 - 平台代码通过窄接口隔离；共享业务逻辑不得散布 OS 条件分支。
 - 注释解释业务原因和平台限制，不翻译代码表面行为。
-- 任何新增依赖和实现都必须在合并前通过目标 RID 的 Native AOT 发布；非 AOT 成功不得作为豁免理由。
+- 任何新增依赖和实现都必须在合并前通过本机 `win-x64` 的 Native AOT 发布；非 AOT 成功不得作为豁免理由。

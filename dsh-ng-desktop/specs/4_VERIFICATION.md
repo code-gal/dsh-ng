@@ -68,21 +68,21 @@
 - **V7.2 精确删除**：客户端安装目录、状态、日志、私有 npm cache、`DSH_HOME`、启动目录和 WebView 数据全部删除。
 - **V7.3 工作区保留**：多个外部工作区及其中由 DSH 创建或修改的文件均保持不变。
 - **V7.4 系统环境保留**：系统 Node.js、用户 npm 配置、共享 npm cache 和其他 Node 进程保持不变。
-- **V7.5 无锁残留**：Windows WebView2 和应用文件无锁定残留；macOS app bundle、Application Support、Caches 和产品 WebKit 数据完成清理。
+- **V7.5 无锁残留**：Windows WebView2 和应用文件无锁定残留。macOS 不属于项目验证目标。
 - **V7.6 幂等恢复**：卸载中断后再次运行卸载器可继续清理，不扩大删除范围。
 - **V7.7 运行中卸载握手**：运行中的客户端收到卸载 IPC 后先销毁 WebView 并停止其受管 DSH；卸载助手在实例互斥体释放前不得开始删除。无法建立握手或等待超时时保留文件并报告失败。
 
 ## 8. 平台发布
 
-- **V8.1 Windows AOT**：`win-x64` 和 `win-arm64` Native AOT 发布成功；真实产物完成启动、安装事务、托盘、WebView 和卸载验证。
-- **V8.2 macOS AOT**：`osx-x64` 和 `osx-arm64` Native AOT 发布成功；签名、公证后的真实产物完成相同验证。
+- **V8.1 Windows AOT**：本机 `win-x64` Native AOT 发布成功；真实产物完成启动、安装事务、托盘、WebView 和卸载验证。
+- **V8.2 macOS 兼容性范围**：macOS 不属于项目发布或验收目标；外部开发者可自行从源码构建和验证，不要求产出、签名、公证或上传任何 macOS 包。
 - **V8.3 AOT 无 .NET 前置**：在未安装 .NET Runtime 的测试系统上，AOT 安装器、客户端和卸载器均正常运行。
 - **V8.4 .NET 依赖安装**：.NET 依赖包在已安装匹配 .NET Desktop Runtime 的系统上完成与 AOT 产物相同的核心安装和运行测试；缺少运行时时，AOT SetupHost 在启动 Avalonia 客户端负载前显示明确的原生前置条件错误，并且不创建产品安装目录或注册项。
-- **V8.5 源码构建**：安装 .NET SDK 后可执行普通构建、运行和测试，且不要求 Native AOT 才能进入开发循环。
+- **V8.5 源码构建**：安装 .NET SDK 后可执行普通构建、`dotnet run -- --development` 和测试，且不要求 Native AOT 才能进入开发循环。
 - **V8.6 非便携准入**：正式验收以平台安装器为入口；直接运行开发构建不代表安装与卸载验收通过。
-- **V8.7 GitHub Release**：正式产物只发布到 GitHub Releases，版本文件不可变，并同时提供 SHA-256、前置条件和签名/公证信息。
+- **V8.7 GitHub Release**：只发布 Windows `win-x64` 产物到 GitHub Releases，版本文件不可变，并同时提供 SHA-256、前置条件和签名状态。未签名 Windows 社区预览必须展示 SmartScreen 风险、校验步骤和不导入根证书的说明。
 - **V8.8 无商店渠道**：项目不生成 Microsoft Store、WinGet 或客户端更新渠道所需的包、清单和运行逻辑。
-- **V8.9 Windows SetupHost 输出**：在 Windows 本机构建 `-Version vX.Y.Z` 时，Native AOT SetupHost 分别内嵌 AOT 与 .NET 依赖客户端负载，生成 `artifacts/installer/DSH-Desktop-Setup-vX.Y.Z-win-x64-aot.exe`、`DSH-Desktop-Setup-vX.Y.Z-win-x64-dotnet.exe` 及各自 SHA-256 文件。每个下载物只有一个 EXE，不包含 PDB，并在最终封装后完成 Authenticode 签名。
+- **V8.9 Windows SetupHost 输出**：在 Windows 本机构建 `-Version vX.Y.Z` 时，Native AOT SetupHost 分别内嵌 AOT 与 .NET 依赖客户端负载，生成 `artifacts/installer/DSH-Desktop-Setup-vX.Y.Z-win-x64-aot.exe`、`DSH-Desktop-Setup-vX.Y.Z-win-x64-dotnet.exe` 及各自 SHA-256 文件。每个下载物只有一个 EXE，不包含 PDB；有可用证书时在最终封装后完成 Authenticode 签名，无证书时只能按未签名 Windows 社区预览规则发布。
 - **V8.10 Windows 单界面与宿主生命周期**：运行 SetupHost 后不出现终端窗口或第二套安装向导，只显示中文 Avalonia 安装引导。并发运行使用独立 staging；构造路径穿越、绝对路径、符号链接、重解析点、长度或 SHA-256 不匹配的负载时，SetupHost 在启动客户端前拒绝安装。正常、失败和停止场景均在 Avalonia 子进程退出前保留完整负载，退出后清理 staging；成功时清理完成后才启动受管安装目录中的客户端。
 - **V8.11 显式安装角色**：直接运行开发或发布目录中的 `DshNgDesktop.exe` 不会隐式执行安装事务；只有 SetupHost 提供的显式安装会话参数可进入安装引导。安装成功后系统应用列表的卸载入口指向受管安装目录，不依赖原始下载文件或临时 staging。
 - **V8.12 独立发行与源码洁净**：桌面 Release 使用 `desktop-vX.Y.Z` 标签；`artifacts/installer/`、安装器、校验值和签名副产物均不被 Git 跟踪，并可与其他子项目的 Release 并存。
@@ -94,8 +94,8 @@
 - 纯状态机、路径所有权、端口选择、日志脱敏和补偿操作必须有自动化单元测试。
 - npx 进程、HTTP 健康检查和失败回滚使用可控替身完成自动化集成测试。
 - DSH 供应与监督至少覆盖：Node/npx 缺失或版本命令失败、私有环境变量与安全工作目录、持久化端口复用与冲突迁移、非 DSH HTTP 响应拒绝、进程所有权绑定、优雅/超时停止，以及普通重试和私有 cache 修复重试的次数上限。
-- 安装器、托盘、自启动、WebView、系统退出和卸载必须在真实 Windows 与 macOS 环境进行人在环验收。
-- CI 必须在 Windows 与 macOS 对各目标 RID 执行 Native AOT 发布；普通 `dotnet build` 成功不能替代该门禁。
+- 安装器、托盘、自启动、WebView、系统退出和卸载必须在真实 Windows `win-x64` 环境进行人在环验收；macOS 验证不属于项目门禁。
+- CI 如启用，只在 Windows 对 `win-x64` 执行 Native AOT 发布；普通 `dotnet build` 成功不能代替该门禁。
 - `Avalonia.Controls.WebView` 及每个新增第三方依赖都必须由真实 AOT 产物验证，不得仅凭包声明判定兼容。
 - SetupHost 的自动化测试必须覆盖负载清单校验、路径穿越与重解析点拒绝、缺文件或哈希损坏、子进程退出码传递、并发 staging 隔离和成功/失败后的临时目录清理；真实 Windows 验收额外确认整个进程期间无控制台窗口闪现。
 - 破坏性测试只能操作测试专属产品目录和测试工作区，禁止以共享 Node/npm 数据作为清理目标。

@@ -13,18 +13,18 @@ namespace DshNgDesktop.Installer;
 internal sealed record SetupApplicationBootstrap(
     AppPaths Paths,
     string? PayloadDirectory,
-    bool ForceSetup,
     bool Background,
-    bool InstallerSession)
+    bool InstallerSession,
+    bool RunDesktopHost)
 {
     private static SetupApplicationBootstrap? _current;
 
     /// <summary>
-    /// Set by the native setup window only after a successful installer-hosted
-    /// transaction has been acknowledged by the user. Program then starts the
-    /// copied client after the temporary bootstrap process exits.
+    /// The Windows SetupHost consumes this outcome after its direct child
+    /// process exits. The host, not the temporary Avalonia process, removes
+    /// the staging directory and starts the copied installed client.
     /// </summary>
-    public bool StartInstalledClientAfterExit { get; set; }
+    public bool? InstallerSessionSucceeded { get; set; }
 
     public static SetupApplicationBootstrap Current => _current
         ?? throw new InvalidOperationException("The desktop bootstrap was not configured.");
