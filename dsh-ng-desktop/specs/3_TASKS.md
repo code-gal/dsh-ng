@@ -110,3 +110,22 @@
 2. **闭合 pkg 与卸载**：postinstall 以显式目标用户环境同步传播结果，并在所有退出路径清理系统暂存；WebKit helper 与 app 统一 macOS 14.0 目标。
 3. **补发布门禁**：包构建验证架构、权限、依赖、Info.plist 和 Mach-O 部署目标，保存匹配 dSYM；GitHub Runner 只执行受版本控制的 ReleaseTests 与包脚本。
 4. **风险控制与回退**：维护锁不得退化为无锁；Node 解析不得执行来自路径或环境的拼接 shell 命令；权限修复不得给非必要文件增加执行位；进程停止不得按名称枚举；清理只处理精确产品路径与 WebKit 产品存储。任一 macOS 或 Windows 验证失败时停止发布、保留日志和 dSYM，不移动或覆盖既有标签；仅以新的 SemVer 修复版本重新进入 M7.9-M7.12。
+
+## M8：macOS 实机已知问题（待调研）
+
+> 以下为真实 Apple Silicon 实机验收暴露的问题记录，仅为症状描述；根因与修复方案尚未定论，待进一步调研后再拆分为可执行任务。
+
+- [ ] **M8.1 系统安装器生命周期异常**：macOS 系统安装器在 DSH Desktop 内部安装完成并启动后，仍停留在"等待安装完成"界面，不可关闭或取消；此时 DSH Desktop 从托盘退出会弹出"从 Avalonia Application 意外退出"，系统安装器随即显示安装失败（实际已安装）。此后每次启动再退出都会复现"意外退出"提示。
+- [ ] **M8.2 访达无法发现应用且无图标**：安装后无法在访达"应用程序"中直接找到，需手动跳到 `~/Applications/DSH Desktop.app`；应用没有自己的图标（Windows 有图标）。
+- [ ] **M8.3 安装位置无法打开**：安装程序窗口上无法打开安装位置，但可以打开日志目录。
+- [ ] **M8.4 无法原生卸载且残留分散**：无法在访达拖入废纸篓或应用列表右键卸载；第三方卸载工具显示产物分布在多处（`com.deepseekharness.dshdesktop.installer` 的 WebKit/Preferences、`/var/db/receipts` 的 pkg 收据、`~/Library/Application Support` 与 `~/Library/Caches` 的 DSH Desktop 数据），而非像 Windows 集中一处且干净卸载。
+- [ ] **M8.5 重复安装行为异常**：DSH Desktop 已在运行时不实际重装即提示成功；未运行时进入安装引导，选择覆盖/全新安装报"安装未完成：无法安全停止已运行的 DSH Desktop：The running DSH Desktop instance rejected the command."，原安装和数据未被替换。
+
+### M8 初步调研结论（参考，待验证）
+
+> 以下为代码层面的初步假设，非定论；需结合真实实机崩溃日志、LaunchServices 注册状态与 dSYM 符号化进一步确认。
+
+- **疑似根因 A（影响 M8.1/M8.5）**：macOS postinstall 漏传 `--installer-session`（Windows SetupHost 有传），导致安装引导进程把自己当作"主客户端"而非"纯安装会话"——安装提交后直接转成长驻客户端，postinstall 一直阻塞等待其退出（系统安装器停在"等待安装完成"）；引导进程还抢单实例锁并起 named-pipe 监听，重装时向"自己"发维护命令被拒绝（M8.5 的 rejected）。DSH 运行中重装时，引导进程抢锁失败 → 仅激活已有窗口即以退出码 0 返回，造成"假成功"。
+- **疑似根因 B（影响 M8.1/M8.2）**：所有启动路径（postinstall 拉起、LaunchAgent 自启动）都直接 exec 裸 Mach-O 可执行文件，而非经 `open`/LaunchServices 启动 `.app`，导致进程无 `Info.plist`/bundle 上下文——进程名回退为字面量 "Avalonia Application"，LaunchServices 未注册该 bundle（访达不显示、无图标）。"意外退出"疑为 teardown 路径（WKWebView/DSH 销毁）崩溃，需 crash log 符号化定位。
+- **疑似原因（M8.3）**：`OpenInstallLocation` 用 `open <路径>`；目标 `~/Applications/DSH Desktop.app` 安装前不存在（回退到最近的已存在父目录）、安装后是 `.app` bundle（`open` 会启动而非在 Finder 中显示）。应改用 `open -R` / `NSWorkspace.activateFileViewerSelectingURLs` 语义。
+- **疑似原因（M8.4）**：macOS 无"右键卸载/卸载注册表"（`RegisterInstallationAsync` 在 macOS 为空实现）；卸载入口埋于 `.app` 内不可发现。`.installer` 是独立 bundle id，运行后留下自己的 `~/Library/Preferences/*.installer.plist` 与 `~/Library/WebKit/*.installer` 数据存储，卸载器从不清理，造成"装了两套"观感；`/var/db/receipts` 与 `Preferences`/`Caches` 多为 macOS 正常产物。
