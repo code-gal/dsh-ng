@@ -168,15 +168,17 @@ jobs:
             exit 0
           fi
           dotnet tool install --global dotnet-dump --version 9.* || true
-          tool="$HOME/.dotnet/tools/dotnet-dump"
-          if [[ ! -x "$tool" ]]; then
-            dotnet tool install --global dotnet-dump
-            tool="$HOME/.dotnet/tools/dotnet-dump"
-          fi
-          "$tool" analyze "$dump" \
+          "$HOME/.dotnet/tools/dotnet-dump" analyze "$dump" \
             --command 'threads' \
             --command 'clrstack -all -f' \
-            --command 'printexception' > crash-analysis.txt 2>&1 || true
+            --command 'printexception' > crash-analysis.txt 2>&1 &
+          analyzer=$!
+          ( sleep 300; kill -TERM "$analyzer" 2>/dev/null ) &
+          watcher=$!
+          if ! wait "$analyzer"; then
+            echo 'dotnet-dump analyze failed or timed out after 300s; raw dump is still uploaded.' >&2
+          fi
+          kill -TERM "$watcher" 2>/dev/null || true
           sed -n '1,400p' crash-analysis.txt
 
       - name: Upload macOS test host crash diagnostics
