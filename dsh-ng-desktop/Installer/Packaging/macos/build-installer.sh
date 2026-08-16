@@ -49,6 +49,7 @@ export MACOSX_DEPLOYMENT_TARGET="$macos_minimum_version"
 dotnet restore "$project" -r "$rid" --configfile "$nuget_config"
 dotnet publish "$project" -c Release -r "$rid" --no-restore \
   -p:DshPublishMode=Aot -p:Version="$version" -p:PublishSingleFile=true -p:SelfContained=true \
+  -p:AppleMinOSVersion="$macos_minimum_version" \
   -p:DebugType=Full -p:DebugSymbols=true -o "$publish"
 
 dsym_count=0

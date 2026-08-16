@@ -112,7 +112,7 @@
 - npx 进程、HTTP 健康检查和失败回滚使用可控替身完成自动化集成测试。
 - DSH 供应与监督至少覆盖：Node/npx 缺失或版本命令失败、私有环境变量与安全工作目录、持久化端口复用与冲突迁移、非 DSH HTTP 响应拒绝、进程所有权绑定、优雅/超时停止，以及普通重试和私有 cache 修复重试的次数上限。
 - 安装器、托盘、自启动、WebView、系统退出和卸载必须在真实 Windows `win-x64` 与 macOS `osx-arm64` 环境进行人在环验收；Windows ARM64、macOS Intel 与其他架构不属于项目门禁。
-- CI 在 `desktop-v*` 标签上分别使用 Windows 构建 `win-x64` Native AOT/.NET 依赖安装器、macOS ARM64 构建 `osx-arm64` Native AOT `pkg`；普通 `dotnet build` 成功不能代替该门禁，CI 构建成功也不能代替标签推送前的人在环安装和卸载验收。
+- CI 在 `desktop-v*` 标签上分别使用 Windows 构建 `win-x64` Native AOT/.NET 依赖安装器、macOS ARM64 构建 `osx-arm64` Native AOT `pkg`；普通 `dotnet build` 成功不能代替该门禁，CI 构建成功也不能代替候选安装包发布后的人在环安装和卸载验收。
 - macOS 自动门禁必须报告执行宿主架构；不能执行 `osx-arm64` 产物的宿主只能做交叉构建，不得产出“macOS 运行验证通过”的结论。真实产物冒烟必须覆盖单实例/维护锁入口，不能让 `--doctor` 的早返回路径成为唯一执行检查。
 - macOS 发布构建必须把匹配 dSYM 作为内部验证工件保存到与产物版本关联的受控位置；用户 pkg 与公开 Release 不包含 dSYM，但崩溃验收必须能完成符号化。
 - `Avalonia.Controls.WebView` 及每个新增第三方依赖都必须由真实 AOT 产物验证，不得仅凭包声明判定兼容。

@@ -230,7 +230,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 每个 Windows `win-x64` 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。每个 macOS `osx-arm64` 版本上传一个 Native AOT `pkg`。每个安装包均附带同名 SHA-256 文件。
 - Release 同时提供 SHA-256 校验值、Changelog 用户可见更新、系统与 Node 前置条件和签名状态。未签名 Windows 社区预览必须明确标记 SmartScreen 风险、校验步骤和“不得导入根证书”；未签名、未公证 macOS 社区预览必须说明 Gatekeeper 风险与单次人工打开要求。
 - 桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
-- `desktop-v*` 标签触发专属 GitHub Actions 工作流：准备任务校验标签 SemVer 与 `CHANGELOG.md` 的版本条目；Windows Runner 构建 `win-x64` AOT/.NET 依赖安装器，macOS ARM64 Runner 构建 `osx-arm64` AOT `pkg`，并运行受版本控制的 `ReleaseTests` 与包验证脚本，随后各自生成 SHA-256。两个构建任务均成功后，发布任务下载六个附件，以前一个 `desktop-v*` 标签为范围计算提交数量与 GitHub 比较链接，创建未签名社区预览 Release，并将精炼的 Changelog 条目作为更新说明。工作流不逐条输出提交或自动生成详细 Release Notes；只授予 `contents: write`，不持有签名私钥、Apple 凭据或公证凭据，也不代替推送标签前在真实目标机器上的安装、卸载和风险验收。
+- `desktop-v*` 标签触发专属 GitHub Actions 工作流：准备任务校验标签 SemVer 与 `CHANGELOG.md` 的版本条目；Windows Runner 构建 `win-x64` AOT/.NET 依赖安装器，macOS ARM64 Runner 构建 `osx-arm64` AOT `pkg`，并运行受版本控制的 `ReleaseTests` 与包验证脚本，随后各自生成 SHA-256。两个构建任务均成功后，发布任务下载六个附件，以前一个 `desktop-v*` 标签为范围计算提交数量与 GitHub 比较链接，创建未签名社区预览 Release，并将精炼的 Changelog 条目作为更新说明。工作流不逐条输出提交或自动生成详细 Release Notes；只授予 `contents: write`，不持有签名私钥、Apple 凭据或公证凭据。标签产出的安装包为未签名社区预览候选包，真实目标机器上的安装、卸载和风险验收在候选包发布后完成。
 - 客户端不查询 GitHub Release，也不提示或安装客户端更新；用户自行获取新版本。
 
 ## 8. 日志与错误

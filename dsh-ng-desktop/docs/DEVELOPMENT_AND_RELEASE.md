@@ -72,9 +72,9 @@ dotnet test ReleaseTests/DshNgDesktop.ReleaseTests.csproj -r osx-arm64
 
 1. 在 [`CHANGELOG.md`](../CHANGELOG.md) 的 `Unreleased` 下整理用户可见更新，决定 major、minor 或 patch，并创建同版本小节；提交该变更。
 2. 将发布提交推送到承载 GitHub Actions 的 GitHub 远程分支。须显式执行 `git push github <branch>`；用 `git log github/<branch>..HEAD` 确认没有待推送的发布提交。
-3. 在真实 Windows `win-x64` 与 macOS `osx-arm64` 上分别从最终安装包完成安装、首次 DSH 供应、托盘、自启动、退出、卸载、残留、SHA-256 和安全提示验收。
-4. 在该发布提交上创建并推送标签，例如 `git tag desktop-v0.9.11 <release-commit>` 和 `git push github refs/tags/desktop-v0.9.11`。
-5. 查看 `DSH Desktop Release` 工作流和生成的 GitHub Release。失败只能通过新提交与新版本修复，不能替换已发布标签或附件。
+3. 在该发布提交上创建并推送标签，例如 `git tag desktop-v0.9.13 <release-commit>` 和 `git push github refs/tags/desktop-v0.9.13`。工作流随后构建未签名社区预览候选包并创建 Release。
+4. 从 Release 下载候选安装包，在真实 Windows `win-x64` 与 macOS `osx-arm64` 上分别完成安装、首次 DSH 供应、托盘、自启动、退出、卸载、残留、SHA-256 和安全提示验收；验收通过的版本即为生效发布。
+5. 验收发现阻断问题时只能通过新提交与新版本修复，不能替换已发布标签或附件。
 
 ### 标签误推恢复（仅限尚未创建 GitHub Release）
 
@@ -91,4 +91,4 @@ Windows SmartScreen 与 macOS Gatekeeper 的警告或首次阻止属于未签名
 3. `build-macos` 在 Apple Silicon macOS Runner 构建 ARM64 AOT `pkg`。
 4. `publish` 仅在两个构建成功后下载六个附件、复核 SHA-256，并使用 Changelog、提交数量和比较链接创建未签名预发布 Release。
 
-CI 不自动推断或修改版本号，不自动生成详细提交日志，也不能替代推送标签前的目标机器验收。若未来启用受信任的 Windows 签名或 macOS 签名/公证，必须先更新 Spec，再使用受控签名环境或经过审批的独立任务。
+CI 不自动推断或修改版本号，不自动生成详细提交日志，也不能替代候选安装包发布后在真实目标机器上的人工验收。若未来启用受信任的 Windows 签名或 macOS 签名/公证，必须先更新 Spec，再使用受控签名环境或经过审批的独立任务。

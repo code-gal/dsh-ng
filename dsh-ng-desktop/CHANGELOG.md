@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-08-17
+
+### Fixed
+
+- 修复 macOS ARM64 Native AOT 安装包 CI 构建失败：`dotnet publish` 显式传递 `AppleMinOSVersion=14.0`，主程序按 `minos 14.0` 链接，与 WebKit 辅助程序和 Mach-O 最低版本门禁一致。
+
 ## [0.9.12] - 2026-08-16
 
 ### Fixed
