@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-08-17
+
+### Fixed
+
+- 修复 macOS Release 门禁中启动器工作目录断言误报：子进程 `getcwd` 返回物理路径（`/var` 符号链接解析为 `/private/var`），测试现通过 `realpath` 规范化期望路径后再比较，消除 `/var` 与 `/private/var` 前缀差异导致的假失败。启动器 chdir 行为本身正确，无产品代码变更。
+
 ## [0.9.18] - 2026-08-17
 
 ### Fixed

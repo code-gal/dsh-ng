@@ -3,6 +3,8 @@ using DshNgDesktop.Dsh;
 using DshNgDesktop.Infrastructure;
 using DshNgDesktop.Installer;
 using DshNgDesktop.Platform;
+using System.Runtime.InteropServices;
+using System.Text;
 using Xunit;
 
 namespace DshNgDesktop.ReleaseTests;
@@ -59,7 +61,8 @@ public sealed class MacOSReleaseBoundaryTests
                 ["-c", "pwd; sleep 30"]));
             await using var group = PlatformServices.CreateDefault().CreateProcessGroup();
 
-            Assert.Equal(workingDirectory, await currentDirectory.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            // getcwd reports the physical path (/var -> /private/var), so compare resolved paths.
+            Assert.Equal(ResolvePhysicalPath(workingDirectory), await currentDirectory.Task.WaitAsync(TimeSpan.FromSeconds(5)));
             var ownership = await group.AddProcessAsync(process.ProcessId);
             Assert.True(ownership.Succeeded, ownership.Error);
 
@@ -166,6 +169,20 @@ public sealed class MacOSReleaseBoundaryTests
             "npx" => new NodeExecutableResolution(command, npx, "release-test"),
             _ => null
         };
+    }
+
+    [DllImport("libc", EntryPoint = "realpath", SetLastError = true)]
+    private static extern nint RealPath(string path, [Out] byte[] resolvedPath);
+
+    private static string ResolvePhysicalPath(string path)
+    {
+        var buffer = new byte[1024];
+        if (RealPath(path, buffer) == 0)
+        {
+            throw new IOException($"realpath failed for '{path}'.");
+        }
+
+        return Encoding.UTF8.GetString(buffer, 0, Array.IndexOf(buffer, (byte)0));
     }
 
     private static AppPaths CreatePaths(string root, string installRoot) => AppPaths.Create(
