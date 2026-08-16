@@ -13,8 +13,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish Windows installers
+  prepare:
+    name: Validate release version and changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate desktop release tag and changelog entry
+        id: version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^desktop-v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?)$ ]]; then
+            echo "Desktop release tags must use desktop-v<SemVer>: $tag" >&2
+            exit 1
+          fi
+
+          version="${BASH_REMATCH[1]}"
+          changelog="dsh-ng-desktop/CHANGELOG.md"
+          if ! awk -v header="## [$version]" 'index($0, header) == 1 { found = 1 } END { exit found ? 0 : 1 }' "$changelog"; then
+            echo "The changelog does not contain a release entry for $version." >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Build Windows x64 installers
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -25,17 +60,7 @@ jobs:
       - name: Check out tagged source
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate desktop release tag
-        id: version
-        run: |
-          $tag = '${{ github.ref_name }}'
-          if ($tag -notmatch '^desktop-v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$') {
-            throw "Desktop release tags must use desktop-v<SemVer>: $tag"
-          }
-          "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
 
       - name: Install .NET 10 SDK
         uses: actions/setup-dotnet@v5
@@ -44,21 +69,23 @@ jobs:
           dotnet-quality: ga
 
       - name: Build AOT and .NET installers
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           & .\dsh-ng-desktop\Installer\Packaging\windows\Build-Installer.ps1 `
             -Mode Aot `
             -RuntimeIdentifier win-x64 `
-            -Version '${{ steps.version.outputs.version }}'
+            -Version $env:RELEASE_VERSION
           & .\dsh-ng-desktop\Installer\Packaging\windows\Build-Installer.ps1 `
             -Mode DotNet `
             -RuntimeIdentifier win-x64 `
-            -Version '${{ steps.version.outputs.version }}'
+            -Version $env:RELEASE_VERSION
 
           $expectedNames = @(
-            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-aot.exe',
-            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-aot.exe.sha256',
-            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-dotnet.exe',
-            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-dotnet.exe.sha256'
+            "DSH-Desktop-Setup-v$env:RELEASE_VERSION-win-x64-aot.exe",
+            "DSH-Desktop-Setup-v$env:RELEASE_VERSION-win-x64-aot.exe.sha256",
+            "DSH-Desktop-Setup-v$env:RELEASE_VERSION-win-x64-dotnet.exe",
+            "DSH-Desktop-Setup-v$env:RELEASE_VERSION-win-x64-dotnet.exe.sha256"
           )
           foreach ($name in $expectedNames) {
             $path = Join-Path 'dsh-ng-desktop\artifacts\installer' $name
@@ -67,59 +94,184 @@ jobs:
             }
           }
 
-      - name: Create GitHub Release and upload artifacts
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-windows
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-win-x64-aot.exe
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-win-x64-aot.exe.sha256
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-win-x64-dotnet.exe
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-win-x64-dotnet.exe.sha256
+
+  build-macos:
+    name: Build macOS ARM64 installer
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - name: Build unsigned Native AOT package
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          bash dsh-ng-desktop/Installer/Packaging/macos/build-installer.sh --version "$RELEASE_VERSION"
+
+          package="dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v$RELEASE_VERSION-osx-arm64-aot.pkg"
+          test -f "$package"
+          test -f "$package.sha256"
+          (
+            cd "$(dirname "$package")"
+            shasum -a 256 -c "$(basename "$package").sha256"
+          )
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-macos
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-osx-arm64-aot.pkg
+            dsh-ng-desktop/artifacts/installer/DSH-Desktop-Setup-v${{ needs.prepare.outputs.version }}-osx-arm64-aot.pkg.sha256
+
+  publish:
+    name: Create GitHub Release
+    needs: [prepare, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download Windows release assets
+        uses: actions/download-artifact@v5
+        with:
+          name: desktop-release-windows
+          path: release-assets/windows
+
+      - name: Download macOS release assets
+        uses: actions/download-artifact@v5
+        with:
+          name: desktop-release-macos
+          path: release-assets/macos
+
+      - name: Validate assets and create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
         run: |
-          $tag = $env:GITHUB_REF_NAME
-          $previousTag = git tag --list 'desktop-v*' --sort=-version:refname |
-            Where-Object { $_ -ne $tag } |
-            Select-Object -First 1
-          $range = if ([string]::IsNullOrWhiteSpace($previousTag)) { $tag } else { "$previousTag..$tag" }
-          $commits = @(git log $range --no-merges --pretty=format:'- %h %s' -- dsh-ng-desktop README.md)
-          if ($commits.Count -eq 0) {
-            $commits = @('- 本标签范围内没有独立的桌面项目提交。')
-          }
+          set -Eeuo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="$RELEASE_VERSION"
+          windows_assets="release-assets/windows"
+          macos_assets="release-assets/macos"
+          release_root="release-assets"
 
-          $notes = @"
-          ## 安装前必读
-
-          本版本是 **未签名社区预览**。Windows SmartScreen 可能显示警告；请只从本 Release 下载，并使用随附的 `.sha256` 文件核对 SHA-256。不要导入任何根证书或发布者证书。
-
-          - 系统：Windows x64
-          - 前置条件：系统已安装可用的 Node.js 与 npx
-          - `-aot.exe`：无需预装 .NET Runtime
-          - `-dotnet.exe`：需要 .NET 10 Desktop Runtime
-
-          ## 更新综述
-
-          从桌面项目上一个发行标签到 **$tag** 共收录 $($commits.Count) 条非合并提交；下方先列出提交摘要，随后附上 GitHub 根据合并请求和贡献者自动生成的变更记录。
-
-          ## 提交摘要
-
-          $($commits -join "`n")
-          "@
-
-          $artifacts = @(
-            Get-ChildItem -LiteralPath 'dsh-ng-desktop\artifacts\installer' -File |
-              Where-Object { $_.Name -like '*.exe' -or $_.Name -like '*.sha256' } |
-              Sort-Object Name |
-              ForEach-Object FullName
+          expected_windows=(
+            "DSH-Desktop-Setup-v$version-win-x64-aot.exe"
+            "DSH-Desktop-Setup-v$version-win-x64-aot.exe.sha256"
+            "DSH-Desktop-Setup-v$version-win-x64-dotnet.exe"
+            "DSH-Desktop-Setup-v$version-win-x64-dotnet.exe.sha256"
           )
-          $arguments = @(
-            'release', 'create', $tag,
-            '--verify-tag',
-            '--fail-on-no-commits',
-            '--prerelease',
-            '--title', "DSH Desktop $tag（未签名社区预览）",
-            '--generate-notes',
-            '--notes', $notes
+          expected_macos=(
+            "DSH-Desktop-Setup-v$version-osx-arm64-aot.pkg"
+            "DSH-Desktop-Setup-v$version-osx-arm64-aot.pkg.sha256"
           )
-          if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
-            $arguments += @('--notes-start-tag', $previousTag)
-          }
+          for asset in "${expected_windows[@]}"; do
+            test -f "$windows_assets/$asset"
+          done
+          for asset in "${expected_macos[@]}"; do
+            test -f "$macos_assets/$asset"
+          done
 
-          & gh @arguments @artifacts
-          if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release creation failed with exit code $LASTEXITCODE."
-          }
+          [[ "$(find "$release_root" -type f | wc -l | tr -d '[:space:]')" == 6 ]]
+          (
+            cd "$windows_assets"
+            sha256sum -c "DSH-Desktop-Setup-v$version-win-x64-aot.exe.sha256"
+            sha256sum -c "DSH-Desktop-Setup-v$version-win-x64-dotnet.exe.sha256"
+          )
+          (
+            cd "$macos_assets"
+            sha256sum -c "DSH-Desktop-Setup-v$version-osx-arm64-aot.pkg.sha256"
+          )
+
+          changelog="dsh-ng-desktop/CHANGELOG.md"
+          changelog_section="${RUNNER_TEMP}/desktop-changelog-$version.md"
+          awk -v header="## [$version]" '
+            index($0, header) == 1 { in_section = 1; next }
+            in_section && index($0, "## [") == 1 { exit }
+            in_section { print }
+          ' "$changelog" > "$changelog_section"
+          if ! grep -q '[^[:space:]]' "$changelog_section"; then
+            echo "The changelog entry for $version has no release notes." >&2
+            exit 1
+          fi
+
+          previous_tag="$(git tag --list 'desktop-v*' --sort=-version:refname | awk -v current="$tag" '$0 != current { print; exit }')"
+          if [[ -n "$previous_tag" ]]; then
+            commit_range="$previous_tag..$tag"
+            commit_count="$(git rev-list --count --no-merges "$commit_range")"
+            comparison="https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${tag}"
+            comparison_note="[$previous_tag...$tag]($comparison)"
+          else
+            commit_count="$(git rev-list --count --no-merges "$tag")"
+            comparison_note="首次桌面发行（没有前序桌面标签）"
+          fi
+
+          notes_file="${RUNNER_TEMP}/desktop-release-notes.md"
+          {
+            echo "## 更新内容"
+            cat "$changelog_section"
+            echo
+            echo "## 提交范围"
+            echo "- 自上一个桌面标签以来的非合并提交：$commit_count"
+            echo "- 比较：$comparison_note"
+            echo
+            echo "## 安装前必读"
+            echo
+            echo "本版本是 **未签名社区预览**。仅从本 Release 下载，并先用随附的 \`.sha256\` 文件校验安装包。"
+            echo
+            echo "### Windows x64"
+            echo "- \`-aot.exe\`：Native AOT 自包含，无需预装 .NET Runtime。"
+            echo "- \`-dotnet.exe\`：需要 .NET 10 Desktop Runtime。"
+            echo "- 两种安装器均需要系统已有可用的 Node.js 与 npx。Windows SmartScreen 可能显示警告；请勿导入根证书或发布者证书。"
+            echo
+            echo "### macOS Apple Silicon"
+            echo "- \`-osx-arm64-aot.pkg\`：Native AOT 自包含，仅支持 Apple Silicon，并需要系统已有可用的 Node.js 与 npx。"
+            echo "- 该 PKG 未签名且未公证。Gatekeeper 可能警告或阻止第一次打开；确认来源和 SHA-256 后，仅按 macOS 的单次人工打开流程继续，勿关闭 Gatekeeper、SIP 或其他全局安全保护。"
+          } > "$notes_file"
+
+          gh release create "$tag" \
+            --verify-tag \
+            --prerelease \
+            --title "DSH Desktop $tag（未签名社区预览）" \
+            --notes-file "$notes_file" \
+            "$windows_assets/${expected_windows[0]}" \
+            "$windows_assets/${expected_windows[1]}" \
+            "$windows_assets/${expected_windows[2]}" \
+            "$windows_assets/${expected_windows[3]}" \
+            "$macos_assets/${expected_macos[0]}" \
+            "$macos_assets/${expected_macos[1]}"

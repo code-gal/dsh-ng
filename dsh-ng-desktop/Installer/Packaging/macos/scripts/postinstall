@@ -13,5 +13,10 @@ target="$home_directory/Applications/DSH Desktop.app"
 
 # The native Avalonia bootstrap owns the visible transaction, health check and
 # compensation. launchctl asuser keeps its UI in the logged-in user's session.
-launchctl asuser "$uid" sudo -u "$console_user" "$bootstrap" --install --payload "$payload" --install-root "$target" >/dev/null 2>&1 &
+launchctl asuser "$uid" sudo -u "$console_user" "$bootstrap" \
+  --install \
+  --payload "$payload" \
+  --install-root "$target" \
+  --package-version "@PACKAGE_VERSION@" \
+  --build-flavor Aot >/dev/null 2>&1 &
 exit 0

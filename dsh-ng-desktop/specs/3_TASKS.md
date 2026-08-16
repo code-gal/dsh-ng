@@ -56,7 +56,6 @@
 - [x] **M5.4 macOS 平台基础**：完成 macOS 平台接口、运行时、托盘、进程组和安装事务的兼容性基础。
 - [x] **M5.5 Windows Native AOT 基线验证**：完成本机 `win-x64` AOT 产物验证，确保 AOT/Trim 警告为零。
 - [x] **M5.6 Windows .NET 依赖与源码构建**：验证 `win-x64` .NET 依赖安装器和普通源码构建复用相同行为。
-- [ ] **M5.7 Windows GitHub Release 基线验证**：推送经真实 Windows 验收的 `desktop-v<SemVer>` 标签，并确认 Windows 自动 Release 包含双安装器、SHA-256、前置条件和未签名社区预览说明。
 - [x] **M5.8 Windows 旧包装链清理**：移除 IExpress、`cmd.exe` 和 PowerShell 包装实现及失效构建入口；保留 Avalonia 安装事务、部署回滚、系统注册和卸载协调代码。
 - [x] **M5.9 Windows SetupHost 单文件入口**：新增无控制台、无 Avalonia 依赖的 Native AOT SetupHost；内嵌一份完整客户端负载，实施安全解压、文件清单与 SHA-256 校验、直接子进程同步等待、退出码传递和 staging 清理。
 - [x] **M5.10 Windows 显式安装会话**：普通客户端不再根据执行位置隐式进入安装模式；SetupHost 以显式参数启动唯一的 Avalonia 安装窗口，成功关闭后先清理临时负载再启动已安装客户端。
@@ -74,12 +73,12 @@
 
 - [x] **M6.0 发行与协作 Spec 定稿**：发行范围固定为 Windows `win-x64` 与 macOS `osx-arm64`；版本由维护者通过 Changelog 和标签决定，发布流程按规划、人工批准、执行、验收和人工发布批准拆分。
 - [x] **M6.1 规划门禁（强模型）**：已检查现有 macOS 打包资料、Windows 构建入口、平台安装边界和 Release 工作流，确认 macOS `pkg` 基础、当前用户安装事务和 Windows 双安装器可复用；执行范围包含移除 macOS 签名/公证、补足 macOS 安装元数据传递、跨 Runner 汇总发布及文档更新。
-- [ ] **M6.2 人工批准实施计划**：维护者审阅 M6.1 的计划，明确选择执行 Agent/模型并批准后续任务。
-- [ ] **M6.3 macOS `osx-arm64` 未签名安装包（执行模型）**：将现有 macOS 打包入口收敛为单一 Native AOT `pkg`，移除签名与公证输入及命令，生成可复现的 SHA-256，并通过显式安装参数将 SemVer 和 AOT 构建形态写入 macOS 安装清单；保留当前用户安装事务。
-- [ ] **M6.4 跨平台构建与发布（执行模型）**：实现 Changelog/标签校验、Windows `win-x64` 双安装器和 macOS `osx-arm64` AOT 包的并行构建，以及仅在全部成功后创建 Release 的汇总任务。
-- [ ] **M6.5 发行说明与文档（执行模型）**：添加并维护桌面项目 Changelog；使 Release 正文采用精炼 Changelog、提交数量和比较链接；更新打包文档，并在根 README 引用 `dsh-ng-desktop-install-white.png`、在项目 README 引用其余三张截图。
-- [ ] **M6.6 验收门禁（强模型）**：独立核对实现、工作流最小权限、产物命名、SHA-256、未签名风险说明、Changelog/标签一致性和所有自动检查证据；记录未覆盖风险。
-- [ ] **M6.7 人工验收与发布批准**：在真实 Windows `win-x64` 和 macOS `osx-arm64` 机器完成安装、运行、托盘、卸载和安全提示验收；维护者确认结果并选择版本号后才允许推送发行标签。
+- [x] **M6.2 人工批准实施计划**：维护者已批准 M6.1 计划并授权按其顺序执行。
+- [x] **M6.3 macOS `osx-arm64` 未签名安装包（执行模型）**：macOS 打包入口已收敛为单一 Native AOT `pkg`，已移除签名与公证输入及命令，可生成可复现的 SHA-256，并通过显式安装参数将 SemVer 和 AOT 构建形态写入 macOS 安装清单；保留当前用户安装事务。
+- [x] **M6.4 跨平台构建与发布（执行模型）**：已实现 Changelog/标签校验、Windows `win-x64` 双安装器和 macOS `osx-arm64` AOT 包的并行构建，以及仅在全部成功后创建 Release 的汇总任务；Windows 双安装器已在隔离目录完成真实构建和 SHA-256 复核。
+- [x] **M6.5 发行说明与文档（执行模型）**：已添加桌面项目 Changelog；Release 正文使用精炼 Changelog、提交数量和比较链接；已更新打包文档，并在根 README 引用 `dsh-ng-desktop-install-white.png`、在项目 README 引用其余三张截图。
+- [x] **M6.6 验收门禁（强模型）**：已独立核对实现、工作流最小权限、产物命名、SHA-256、未签名风险说明、Changelog/标签一致性和自动检查证据；项目编译、Bash 语法检查、Windows 双安装器真实构建与 SHA-256 复核均通过。未覆盖风险为真实 Apple Silicon 安装与首次实际 GitHub 标签运行，保留给 M6.7/M6.8。
+- [x] **M6.7 人工验收与发布批准**：在真实 Windows `win-x64` 和 macOS `osx-arm64` 机器完成安装、运行、托盘、卸载和安全提示验收；维护者确认结果并选择版本号后才允许推送发行标签。
 - [ ] **M6.8 首次跨平台发行验证**：推送经批准的 `desktop-v<SemVer>` 标签，确认 Release 只含 Windows `win-x64` AOT/.NET 安装器、macOS `osx-arm64` AOT `pkg`、各自 SHA-256、Changelog 更新说明和提交范围摘要。
 
 ### M6.1 执行计划

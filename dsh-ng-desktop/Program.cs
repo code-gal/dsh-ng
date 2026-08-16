@@ -29,7 +29,8 @@ internal static class Program
         var installRequested = HasFlag(args, "--install");
         var installerSession = HasFlag(args, "--installer-session");
         var developmentMode = HasFlag(args, "--development");
-        var packageMetadata = installerSession
+        var installationLaunch = ResolveInstallationLaunch(installRequested, installerSession, payloadDirectory);
+        var packageMetadata = installationLaunch == InstallationLaunch.Setup
             ? ParsePackageMetadata(ReadStringOption(args, "--package-version"), ReadStringOption(args, "--build-flavor"))
             : null;
         if (args.Any(argument => string.Equals(argument, "--uninstall-finalize", StringComparison.OrdinalIgnoreCase)))
@@ -44,7 +45,6 @@ internal static class Program
             return;
         }
 
-        var installationLaunch = ResolveInstallationLaunch(installRequested, installerSession, payloadDirectory);
         if (installationLaunch == InstallationLaunch.Invalid ||
             (developmentMode && installationLaunch == InstallationLaunch.Setup))
         {
@@ -259,7 +259,7 @@ internal static class Program
         }
 
         // The Windows transport host is the sole caller that may request the
-        // installer session. macOS has its own signed package bootstrap and
+        // installer session. macOS has its own package bootstrap and
         // still supplies the same explicit --install plus --payload boundary.
         var validWindowsSession = OperatingSystem.IsWindows() && installRequested && installerSession && payloadDirectory is not null;
         var validMacOSSession = OperatingSystem.IsMacOS() && installRequested && !installerSession && payloadDirectory is not null;

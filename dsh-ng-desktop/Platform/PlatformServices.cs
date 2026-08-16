@@ -272,10 +272,8 @@ internal sealed class MacOSPlatformServices : PlatformServicesBase
             return Task.FromResult(PlatformOperationResult.Failure("The macOS application bundle was not deployed before its package receipt was registered."));
         }
 
-        // The signed .pkg owns the macOS installation receipt. Writing a
-        // product file into the already signed app bundle would invalidate its
-        // signature, so this seam verifies deployment but has no extra file
-        // registration to perform.
+        // The macOS .pkg owns the installation receipt. This seam verifies
+        // deployment but has no extra file registration to perform.
         return Task.FromResult(PlatformOperationResult.Success());
     }
 
