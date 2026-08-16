@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-08-17
+
+### Fixed
+
+- 修复 macOS Release 门禁中测试宿主进程崩溃（Test host process crashed）无法定位的问题：为 `dotnet test` 启用 blame 崩溃转储与执行序列采集，并将诊断产物作为 CI 工件上传，用于精确定位崩溃时正在执行的测试与堆栈。
+
 ## [0.9.13] - 2026-08-17
 
 ### Fixed
