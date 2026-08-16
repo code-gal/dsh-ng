@@ -267,12 +267,21 @@ public partial class SetupWindow : Window
 
     private void SetupWindow_OnClosing(object? sender, System.ComponentModel.CancelEventArgs eventArgs)
     {
-        if (!_installationStarted || _result is not null || _stopRequested)
+        if (!_installationStarted || _result is not null)
         {
             return;
         }
 
         eventArgs.Cancel = true;
+        if (_stopRequested)
+        {
+            StageText.Text = Runtime.Coordinator.State.State == DshNgDesktop.Core.ApplicationState.RollingBack
+                ? "正在回滚安装"
+                : "正在停止安装";
+            DetailText.Text = "正在清理本次安装创建的产品资源。回滚完成并显示结果前无法关闭此窗口。";
+            return;
+        }
+
         StageText.Text = "要停止安装吗？";
         DetailText.Text = "现在停止将取消安装，并回滚本次创建的产品文件和系统注册项。";
         StopButton.Content = "停止并回滚";

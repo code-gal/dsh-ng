@@ -5,10 +5,11 @@
 - **应用框架**：.NET 10 与 Avalonia 12。
 - **业务界面**：Avalonia `NativeWebView` 内嵌 DSH Web UI。
 - **安装界面**：Avalonia 原生控件，不依赖 WebView。
+- **Windows 单文件宿主**：独立的 Native AOT `WinExe` SetupHost，不引用 Avalonia，只负责内嵌负载校验、安全解压、同步进程等待、退出码传递和临时目录清理。
 - **托盘**：Avalonia `TrayIcon`、`TrayIcons` 与 `NativeMenu`。
 - **进程启动**：系统已有的 Node.js 与 npx；不携带私有 Node.js。
-- **正式发布**：各目标平台独立的 Native AOT、自包含安装产物；Native AOT 是硬性准入条件。
-- **兼容发布**：允许非 AOT、自包含安装产物；源码开发允许普通框架依赖构建。
+- **AOT 发布**：各目标平台独立的 Native AOT、自包含安装产物；Native AOT 是硬性准入条件。
+- **.NET 依赖发布**：Windows 额外提供框架依赖安装产物，要求目标系统已有匹配的 .NET Desktop Runtime；源码开发同样使用框架依赖构建。
 - **发行渠道**：仅通过 GitHub Releases 发布版本化安装包、校验值和签名信息。
 - **平台优先级**：先完成 Windows，再以相同接口实现 macOS。
 
@@ -16,7 +17,7 @@
 
 ### 2.1 工程约束
 
-- 所有正式发行的 .NET 可执行程序均必须启用 `PublishAot`；若平台安装器本身不是 .NET 程序，则不得引入额外 .NET 运行时依赖。
+- 除明确标识的 `.NET 依赖`客户端负载外，所有正式发行的 .NET 可执行程序均必须启用 `PublishAot`；若平台安装器本身不是 .NET 程序，则不得引入额外 .NET 运行时依赖。
 - 项目持续启用 AOT、Trim 和 Single-file 分析器，AOT/Trim 警告作为构建失败处理。
 - 启用依赖 AOT 兼容性检查；第三方依赖的精确抑制必须附带原因和真实 AOT 发布验证，禁止全局关闭分析器。
 - JSON 使用 `System.Text.Json` Source Generator；平台调用优先使用 `LibraryImport` Source Generator。
@@ -25,18 +26,19 @@
 
 ### 2.2 构建模式
 
-- **正式模式**：`PublishAot=true`、self-contained，按 RID 生成本机安装产物。
-- **非 AOT 模式**：`PublishAot=false`、self-contained，复用相同功能、安装器事务和验收用例，不要求目标机器安装 .NET。
+- **AOT 模式**：桌面客户端使用 `PublishAot=true`、self-contained，按 RID 生成本机负载；Windows SetupHost 同样为 AOT、自包含。
+- **.NET 依赖模式**：桌面客户端使用 `PublishAot=false`、`SelfContained=false`，复用相同功能、安装器事务和验收用例，要求目标机器安装匹配的 .NET Desktop Runtime；Windows SetupHost 仍为 AOT、自包含，并在启动客户端负载前检查运行时。
 - **源码模式**：开发者使用 .NET SDK 执行普通 `dotnet build`、`dotnet run` 和测试。
 - Native AOT 必须在目标操作系统构建和验证，至少覆盖 `win-x64`、`win-arm64`、`osx-x64` 与 `osx-arm64`。
 - 普通编译成功不能代替 Native AOT 发布验证；安装器、托盘、平台互操作和 `NativeWebView` 必须由真实 AOT 产物执行冒烟测试。
 
 ## 3. 总体边界
 
-系统由两个产品生命周期组成：
+系统由一个不可见的运输宿主和两个产品生命周期组成：
 
-1. **安装器生命周期**：部署客户端文件、运行原生安装引导、供应 DSH、健康检查、提交或回滚安装事务。
-2. **桌面客户端生命周期**：单实例运行、启动和停止 DSH、承载 WebView、托盘驻留、处理自启动和卸载协作。
+1. **SetupHost 运输生命周期（Windows）**：从单文件读取内嵌客户端负载，校验并安全解压到独占临时目录，以显式安装会话启动客户端，等待其退出后清理临时目录并传递结果。它没有安装向导 UI，不参与产品事务状态机。
+2. **安装器生命周期**：由临时负载中的 Avalonia 客户端显示唯一安装界面，部署客户端文件、供应 DSH、健康检查、提交或回滚安装事务。
+3. **桌面客户端生命周期**：单实例运行、启动和停止 DSH、承载 WebView、托盘驻留、处理自启动和卸载协作。
 
 Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状态机、日志和 DSH 调度逻辑共享；文件部署、自启动、进程组、卸载和签名由平台适配层负责。
 
@@ -63,9 +65,15 @@ Windows 与 macOS 必须分别产出安装器和应用包。安装流程、状�
 
 - `SetupCoordinator` 是安装事务的唯一编排者。它只通过 `EnvironmentDoctor`、`IClientDeployment`、`DshSupervisor`、`IPlatformServices` 和 `InstallManifest` 操作外部资源，界面不得直接复制文件、注册系统项或结束进程。
 - 安装包负载目录与目标 `InstallRoot` 必须不同。`IClientDeployment` 先在目标目录的同级临时目录完整复制负载，再原子移动到受管 `InstallRoot`；已存在的目标目录不覆盖，避免失败安装破坏已提交的客户端。
+- Windows SetupHost 单文件内只保存一份压缩客户端发布负载。它将该负载解压到本次运行独占的 staging 目录，使用同一目录同时作为 Avalonia 安装引导的启动闭包和 `IClientDeployment` 的源 payload，避免重复嵌入客户端。
+- SetupHost 是无控制台 `WinExe`，不引用 Avalonia，不通过 IExpress、`cmd.exe`、PowerShell 或 shell 关联启动客户端。它以直接子进程方式传入 `--install --installer-session --payload <staging>`，持有进程句柄并等待退出；只有子进程结束后才能清理 staging。
+- SetupHost 解压每个条目前必须规范化目标路径并验证其仍位于 staging 根目录内，拒绝绝对路径、父目录穿越、符号链接和其他重解析点。启动前必须验证清单中的文件长度和 SHA-256，至少确认主程序及其声明的全部原生运行库存在。
+- SetupHost 不复制产品文件、不注册自启动或卸载入口、不启动 DSH，也不解释安装事务的业务阶段；这些行为仍由 `SetupCoordinator` 独占。它只在负载校验、解压或子进程创建失败时显示系统原生错误对话框。
+- Avalonia 安装引导以退出码向 SetupHost 报告结果：提交成功且用户关闭完成页后返回 `0`；失败、停止或回滚完成后返回非零。成功时 SetupHost 先清理 staging，再从受管 `InstallRoot` 启动已安装客户端；失败时只清理 staging 并原样返回失败码。
 - `Preflight` 只把平台、Node、npx 与产品数据父目录的错误作为阻断条件；端口冲突和 WebView 缺失以可理解的预警显示，DSH 端口由 Supervisor 在后续阶段迁移。
 - 事务完成顺序固定为：前置检测、部署客户端、启动并验证 DSH Web UI、注册当前用户自启动、注册平台卸载入口、保存 `InstallManifest`、提交。未到 `Committed` 的资源必须按相反顺序补偿。
 - 用户主动停止和外部边界产生的意外取消必须分别记录，但两者都必须进入 `Stopping -> RollingBack -> Failed` 并保留原生失败页；不得让 `OperationCanceledException` 从安装窗口的异步事件处理器逸出导致进程退出。
+- 安装窗口仅可在尚未请求停止时将关闭操作转换为“停止并回滚”确认；一旦已进入 `Stopping` 或 `RollingBack`，所有关闭请求均取消并保留当前回滚视图，直至 `Failed` 或 `Committed` 终态已经呈现。
 - 回滚只接受本次部署记录和内存中的、已通过 `AppPaths` 校验的 `InstallManifest`。它先停止 Supervisor，再注销自启动与卸载入口，随后删除清单内目录和本次部署目录；不根据名称、PATH 或工作区内容扩展删除范围。
 - 回滚时保留安装日志供失败页查看；安装器退出后才删除该失败日志。失败日志本身不是可运行安装的一部分。
 - 启动新事务前，安装窗口检测现有产品状态并要求用户选择处理方式。有效安装清单证明其记录路径可安全处理；无清单但位于 `AppPaths` 精确受管路径内的数据视为中断残留。覆盖安装只允许 `IClientDeployment` 以同级备份目录原子替换 `InstallRoot`，并在失败回滚时恢复原目录；`DSH_HOME`、私有 npm cache、WebView 与日志均不得清理。全新安装仅在用户明确选择后，才可基于当前 `AppPaths` 生成仅用于清理的临时 `InstallManifest`，清理精确记录的路径后部署；安装器当前正在写入的日志始终保留到退出。`ProductDataCleaner` 以受管根目录为边界逐项后序删除，先移除只读属性并有限重试；符号链接和其他重解析点只删除链接本身、不进入其目标。无法验证的安装清单不得覆盖，只允许显式全新安装。
@@ -147,6 +155,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 
 | 模块 | 职责 |
 |---|---|
+| `DshDesktop.SetupHost` | Windows 单文件负载校验、安全解压、同步等待、临时目录清理和退出码传递；无 Avalonia UI |
 | `ApplicationCoordinator` | 单实例、应用状态机、窗口与托盘生命周期 |
 | `SetupCoordinator` | 环境检测、安装阶段、取消、补偿和安装结果 |
 | `DshSupervisor` | npx 启动、输出采集、健康检查、停止与异常退出 |
@@ -181,21 +190,24 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 主窗口仅在 Coordinator 已收到健康检查成功的 loopback URI 后创建 `NativeWebView` 并导航。启动、停止和故障阶段只显示 Avalonia 原生视图；不订阅或改写网页导航、外部链接、脚本消息和资源请求。
 - `NativeWebView.EnvironmentRequested` 是唯一的浏览器环境配置点：Windows 创建并使用 `AppPaths.WebViewDataDirectory` 作为 WebView2 用户数据目录；macOS 设置固定的产品 `DataStoreIdentifier`。该目录或数据存储的删除仍只由安装清单清理流程执行。
 - 托盘图标由应用级 Avalonia `TrayIcon` 创建。Windows 图标点击和两个平台的原生菜单都可显示主窗口；后台启动保持主窗口隐藏，并根据 Coordinator 快照更新托盘提示文本，避免弹窗打断登录；“退出”先销毁 WebView，再停止 Coordinator 所拥有的 DSH，最后显式关闭 Avalonia 生命周期。
-- 安装窗口在事务未结束时拦截窗口关闭，显示原生停止与回滚确认；提交成功后切换到同一进程内的主窗口，复用已验证的 Supervisor，不重复创建 DSH。
+- `SingleInstanceCoordinator` 除激活命令外还承载带确认的卸载命令。运行中客户端收到该命令后，立刻阻止新操作，销毁 WebView、停止 Supervisor 并关闭生命周期；临时卸载助手只在收到确认且确认单实例互斥体已释放后，才注销系统项和清理清单路径。无运行实例时，助手取得同一互斥体后可直接继续。未确认或超时必须以失败退出，不删除文件。清理分两阶段：先保留 `state/install-manifest.json` 并删除其余受管路径和安装根目录，最后才删除状态目录；因此中断后的下一次卸载仍可验证同一清单并继续，所有受管路径已不存在时可幂等成功。
+- 安装窗口在事务未结束时拦截窗口关闭，显示原生停止与回滚确认。显式安装会话提交成功后保留完成页，用户关闭时有序释放临时进程拥有的 Supervisor 并以成功码退出；SetupHost 清理 staging 后启动受管 `InstallRoot` 中的客户端，由已安装实例重新建立正常运行期的 Supervisor。临时安装进程不得长期承载桌面运行生命周期，否则 SetupHost 无法安全清理负载。
 
 ## 7. 平台发行
 
 ### 7.1 Windows
 
 - 提供面向当前用户的安装器，安装目录位于用户可管理的应用目录。
+- GitHub Release 中每种构建形态只提供一个 `DshDesktopSetup.exe` 下载物；SetupHost 内嵌完整客户端负载，安装时只显示一套 Avalonia 原生引导 UI。
 - 注册系统卸载入口和当前用户自启动项。
 - 安装器、主程序、卸载器共享产品 ID 和安装清单。
 - 卸载器在应用退出后删除剩余文件，不使用应用本体自删或按名称杀进程。
-- 默认发布 `win-x64` Native AOT 安装器，并验证 `win-arm64` Native AOT 产物；非 AOT、自包含安装器使用清晰区分的文件名。
+- 卸载入口从安装目录复制最小卸载助手到临时目录；助手向现有实例发送卸载请求并在限定时间内等待退出。只有不存在现有实例或已观察到其互斥体释放后，才执行清理。
+- 每个 Windows 版本发布 `win-x64` AOT 和 .NET 依赖安装器，并验证 `win-arm64` AOT 产物；文件名以 `-aot` 或 `-dotnet` 明确区分构建形态。
 
 ### 7.2 macOS
 
-- 分别构建 Apple Silicon 与 Intel 产物，并完成签名、公证和安装器封装。
+- 分别构建 Apple Silicon 与 Intel 的 AOT 和 .NET 依赖产物，并完成签名、公证和安装器封装；文件名以 `-aot` 或 `-dotnet` 明确区分构建形态。
 - 正式安装器执行与 Windows 相同的供应事务；不把拖拽 `.app` 视为完整安装流程。
 - 使用用户会话的 Service Management (`launchctl` LaunchAgent) 注册和注销登录项；plist 只能引用已提交的 app bundle，并以产品 ID 作为唯一 label。
 - 提供明确的完整卸载入口，清除 app bundle、Application Support、Caches 和 WebKit 数据存储。
@@ -204,8 +216,10 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 ### 7.3 GitHub Releases
 
 - GitHub Release 是唯一正式下载入口，不创建 Microsoft Store、WinGet 或客户端更新清单。
-- 每个版本分别上传各平台和架构的 Native AOT 正式安装器；非 AOT 产物明确标记为兼容构建。
+- 每个 Windows 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。各平台和架构的 Native AOT 安装器仍为正式准入产物。
 - Release 同时提供 SHA-256 校验值、变更说明、系统与 Node 前置条件、签名或公证说明。
+- 正式发行采用目标操作系统上的本机构建与手动上传。桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
+- 当前不包含自动发布的 GitHub Actions 工作流。未来如加入 CI，只可作为不持有签名私钥的构建/测试门禁，并以路径过滤和 `desktop-v*` 标签限定到本子项目；它不能代替目标机器上的安装、卸载和签名验收。
 - 客户端不查询 GitHub Release，也不提示或安装客户端更新；用户自行获取新版本。
 
 ## 8. 日志与错误

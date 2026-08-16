@@ -52,6 +52,8 @@ yarn-error.log*
 /dsh-ng-desktop/LocalTests/
 /dsh-ng-desktop/App_Data/
 /dsh-ng-desktop/Temp/
+# 本地安装器、校验值和签名副产物只上传 GitHub Release，不进入源码
+/dsh-ng-desktop/artifacts/
 #忽略vscode-counter的统计文件
 /.VSCodeCounter/
 

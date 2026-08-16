@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: $0 --rid osx-arm64|osx-x64 --version VERSION --signing-identity IDENTITY --notary-profile PROFILE [--mode Aot|Compatibility] [--output DIR]" >&2
+  echo "用法：$0 --rid osx-arm64|osx-x64 --version 版本号 --signing-identity 签名身份 --notary-profile 公证配置 [--mode Aot|DotNet] [--output 输出目录]" >&2
   exit 2
 }
 
@@ -25,7 +25,21 @@ while (($#)); do
 done
 [[ "$rid" == osx-arm64 || "$rid" == osx-x64 ]] || usage
 [[ -n "$version" && -n "$identity" && -n "$notary_profile" ]] || usage
-[[ "$mode" == Aot || "$mode" == Compatibility ]] || usage
+[[ "$mode" == Aot || "$mode" == DotNet ]] || usage
+version="${version#v}"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+  echo '版本号必须是 0.9.1 或 v0.9.1 形式的 SemVer。' >&2
+  exit 2
+}
+release_version="v$version"
+package_flavor=aot
+self_contained=true
+mode_description='Native AOT（自包含，无需 .NET Runtime）'
+if [[ "$mode" == DotNet ]]; then
+  package_flavor=dotnet
+  self_contained=false
+  mode_description='.NET 依赖（需要预先安装 .NET Runtime）'
+fi
 
 project_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 project="$project_root/DshNgDesktop.csproj"
@@ -34,12 +48,13 @@ publish="$work/publish"
 client_app="$work/DSH Desktop.app"
 bootstrap_app="$work/DSH Desktop Installer.app"
 pkg_root="$work/pkg-root"
-pkg="$output/DSH-Desktop-Setup-$version-$rid.pkg"
+pkg="$output/DSH-Desktop-Setup-$release_version-$rid-$package_flavor.pkg"
 mkdir -p "$publish" "$output"
 trap 'rm -rf "$work"' EXIT
 
+echo "正在发布 $rid 的 $mode_description 客户端…"
 dotnet publish "$project" -c Release -r "$rid" \
-  -p:DshPublishMode="$mode" -p:PublishSingleFile=true -p:SelfContained=true -o "$publish"
+  -p:DshPublishMode="$mode" -p:PublishSingleFile=true -p:SelfContained="$self_contained" -o "$publish"
 
 make_app() {
   local app="$1"
@@ -92,3 +107,5 @@ xcrun notarytool submit "$pkg" --keychain-profile "$notary_profile" --wait
 xcrun stapler staple "$pkg"
 xcrun stapler validate "$pkg"
 shasum -a 256 "$pkg" > "$pkg.sha256"
+echo "已生成安装包：$pkg"
+echo "已生成 SHA-256：$pkg.sha256"

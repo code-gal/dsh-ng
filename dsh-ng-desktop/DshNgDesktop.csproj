@@ -11,10 +11,12 @@
     <Product>DSH Desktop</Product>
     <DshPublishMode Condition="'$(DshPublishMode)' == ''">Aot</DshPublishMode>
     <PublishAot Condition="'$(PublishAot)' == '' and '$(DshPublishMode)' == 'Aot'">true</PublishAot>
-    <PublishAot Condition="'$(PublishAot)' == '' and '$(DshPublishMode)' == 'Compatibility'">false</PublishAot>
-    <SelfContained Condition="'$(SelfContained)' == '' and '$(RuntimeIdentifier)' != ''">true</SelfContained>
+    <PublishAot Condition="'$(PublishAot)' == '' and '$(DshPublishMode)' == 'DotNet'">false</PublishAot>
+    <SelfContained Condition="'$(SelfContained)' == '' and '$(RuntimeIdentifier)' != '' and '$(DshPublishMode)' == 'Aot'">true</SelfContained>
+    <SelfContained Condition="'$(SelfContained)' == '' and '$(RuntimeIdentifier)' != '' and '$(DshPublishMode)' == 'DotNet'">false</SelfContained>
     <PublishSingleFile Condition="'$(PublishSingleFile)' == '' and '$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
-    <PublishTrimmed Condition="'$(PublishTrimmed)' == ''">true</PublishTrimmed>
+    <PublishTrimmed Condition="'$(PublishTrimmed)' == '' and '$(DshPublishMode)' == 'Aot'">true</PublishTrimmed>
+    <PublishTrimmed Condition="'$(PublishTrimmed)' == '' and '$(DshPublishMode)' == 'DotNet'">false</PublishTrimmed>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>

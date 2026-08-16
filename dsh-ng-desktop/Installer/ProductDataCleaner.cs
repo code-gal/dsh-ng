@@ -23,6 +23,7 @@ public sealed class ProductDataCleaner
         InstallManifest manifest,
         bool preserveInstallationLogs,
         bool includeInstallRoot = false,
+        bool preserveState = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -31,6 +32,7 @@ public sealed class ProductDataCleaner
         var records = manifest.ManagedPaths
             .Where(record => includeInstallRoot || record.Kind != ManagedPathKind.InstallRoot)
             .Where(record => !preserveInstallationLogs || record.Kind != ManagedPathKind.Logs)
+            .Where(record => !preserveState || record.Kind != ManagedPathKind.State)
             .OrderByDescending(record => record.Path.Length)
             .ToList();
 

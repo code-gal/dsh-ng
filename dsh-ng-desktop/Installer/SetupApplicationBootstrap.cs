@@ -10,9 +10,21 @@ namespace DshNgDesktop.Installer;
 /// Keeps process argument parsing at the host edge and builds the explicit
 /// setup dependency graph without a reflection-based service container.
 /// </summary>
-internal sealed record SetupApplicationBootstrap(AppPaths Paths, string? PayloadDirectory, bool ForceSetup, bool Background)
+internal sealed record SetupApplicationBootstrap(
+    AppPaths Paths,
+    string? PayloadDirectory,
+    bool ForceSetup,
+    bool Background,
+    bool InstallerSession)
 {
     private static SetupApplicationBootstrap? _current;
+
+    /// <summary>
+    /// Set by the native setup window only after a successful installer-hosted
+    /// transaction has been acknowledged by the user. Program then starts the
+    /// copied client after the temporary bootstrap process exits.
+    /// </summary>
+    public bool StartInstalledClientAfterExit { get; set; }
 
     public static SetupApplicationBootstrap Current => _current
         ?? throw new InvalidOperationException("The desktop bootstrap was not configured.");

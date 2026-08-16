@@ -26,6 +26,7 @@ internal static class Program
         var installRoot = ReadOption(args, "--install-root") ?? SetupLocations.GetDefaultInstallRoot();
         var payloadDirectory = ReadOption(args, "--payload");
         var paths = AppPaths.CreateDefault(installRoot);
+        var installerSession = args.Any(argument => string.Equals(argument, "--installer-session", StringComparison.OrdinalIgnoreCase));
         if (args.Any(argument => string.Equals(argument, "--uninstall-finalize", StringComparison.OrdinalIgnoreCase)))
         {
             RunUninstallFinalize(paths);
@@ -38,27 +39,46 @@ internal static class Program
             return;
         }
 
-        SetupApplicationBootstrap.Configure(new SetupApplicationBootstrap(
+        var bootstrap = new SetupApplicationBootstrap(
             paths,
             payloadDirectory,
             args.Any(argument => string.Equals(argument, "--install", StringComparison.OrdinalIgnoreCase)),
-            args.Any(argument => string.Equals(argument, "--background", StringComparison.OrdinalIgnoreCase))));
-        var instance = new SingleInstanceCoordinator(paths.ProductId);
-        if (!instance.TryAcquirePrimary())
+            args.Any(argument => string.Equals(argument, "--background", StringComparison.OrdinalIgnoreCase)),
+            installerSession);
+        SetupApplicationBootstrap.Configure(bootstrap);
+
+        SingleInstanceCoordinator? instance = null;
+        if (!installerSession)
         {
-            instance.RequestActivationAsync().GetAwaiter().GetResult();
-            instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            return;
+            instance = new SingleInstanceCoordinator(paths.ProductId);
+            if (!instance.TryAcquirePrimary())
+            {
+                instance.RequestActivationAsync().GetAwaiter().GetResult();
+                instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                return;
+            }
+
+            instance.ActivationRequested += (_, _) => Dispatcher.UIThread.Post(ActivateMainWindow);
+            instance.UninstallRequested += (_, request) =>
+                request.Accepted = Dispatcher.UIThread.InvokeAsync(RequestApplicationUninstall).GetAwaiter().GetResult();
         }
 
-        instance.ActivationRequested += (_, _) => Dispatcher.UIThread.Post(ActivateMainWindow);
         try
         {
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
         finally
         {
-            instance.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            instance?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        if (bootstrap.StartInstalledClientAfterExit)
+        {
+            StartInstalledClient(paths);
+        }
+        else if (installerSession)
+        {
+            Environment.ExitCode = 1;
         }
     }
 
@@ -75,6 +95,33 @@ internal static class Program
         var report = doctor.RunAsync().GetAwaiter().GetResult();
         Console.Out.WriteLine(JsonSerializer.Serialize(report, EnvironmentDiagnosticJsonContext.Default.EnvironmentDiagnosticReport));
         Environment.ExitCode = report.HasErrors ? 1 : 0;
+    }
+
+    private static void StartInstalledClient(AppPaths paths)
+    {
+        var executable = Path.Combine(paths.InstallRoot, $"{typeof(Program).Assembly.GetName().Name}.exe");
+        if (!File.Exists(executable))
+        {
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        try
+        {
+            if (Process.Start(new ProcessStartInfo
+                {
+                    FileName = executable,
+                    UseShellExecute = true,
+                    WorkingDirectory = paths.InstallRoot
+                }) is null)
+            {
+                Environment.ExitCode = 1;
+            }
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
+        {
+            Environment.ExitCode = 1;
+        }
     }
 
     private static void ActivateMainWindow()
@@ -97,6 +144,16 @@ internal static class Program
 
         window.Show();
         window.Activate();
+    }
+
+    private static bool RequestApplicationUninstall()
+    {
+        if (Application.Current is App app)
+        {
+            return app.TryRequestUninstall();
+        }
+
+        return false;
     }
 
     private static string? ReadOption(IReadOnlyList<string> args, string option)
@@ -155,11 +212,33 @@ internal static class Program
 
     private static void RunUninstallFinalize(AppPaths paths)
     {
-        var result = new UninstallCoordinator(paths, PlatformServices.CreateDefault(), new ProductDataCleaner(paths))
-            .RunAsync()
+        var result = RunUninstallFinalizeAsync(paths)
             .GetAwaiter()
             .GetResult();
         Environment.ExitCode = result.Succeeded ? 0 : 1;
+    }
+
+    private static async Task<PlatformOperationResult> RunUninstallFinalizeAsync(AppPaths paths)
+    {
+        await using var instance = new SingleInstanceCoordinator(paths.ProductId);
+        if (!instance.TryAcquireUninstallLock(TimeSpan.Zero))
+        {
+            var request = await instance.RequestUninstallAsync().ConfigureAwait(false);
+            if (!request.Delivered || !request.Accepted)
+            {
+                return PlatformOperationResult.Failure(
+                    $"无法与正在运行的 DSH Desktop 建立卸载协作：{request.Error ?? "实例未确认卸载请求。"}");
+            }
+
+            if (!instance.TryAcquireUninstallLock(TimeSpan.FromSeconds(30)))
+            {
+                return PlatformOperationResult.Failure("正在运行的 DSH Desktop 未在 30 秒内完成停止；为避免删除仍在使用的文件，卸载未开始。");
+            }
+        }
+
+        return await new UninstallCoordinator(paths, PlatformServices.CreateDefault(), new ProductDataCleaner(paths))
+            .RunAsync()
+            .ConfigureAwait(false);
     }
 
     private static bool IsWithin(string root, string candidate)

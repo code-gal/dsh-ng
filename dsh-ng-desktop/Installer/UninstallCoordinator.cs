@@ -5,9 +5,9 @@ namespace DshNgDesktop.Installer;
 
 /// <summary>
 /// Performs the product-owned part of a system uninstall after the installed
-/// executable has handed off to a temporary helper. Runtime IPC and WebView
-/// teardown remain a later desktop-lifecycle concern; this class never claims
-/// a process merely because a stale runtime-state file exists.
+/// executable has handed off to a temporary helper and the running instance
+/// has released its single-instance mutex. This class never claims a process
+/// merely because a stale runtime-state file exists.
 /// </summary>
 public sealed class UninstallCoordinator
 {
@@ -30,7 +30,9 @@ public sealed class UninstallCoordinator
             manifest = await InstallManifest.LoadAsync(_paths, cancellationToken).ConfigureAwait(false);
             if (manifest is null)
             {
-                return PlatformOperationResult.Failure("The DSH Desktop installation manifest was not found. No files were removed.");
+                return HasAnyManagedPath()
+                    ? PlatformOperationResult.Failure("The DSH Desktop installation manifest was not found. No files were removed.")
+                    : PlatformOperationResult.Success();
             }
 
             manifest.ValidateAgainst(_paths);
@@ -54,7 +56,24 @@ public sealed class UninstallCoordinator
 
         try
         {
-            await _dataCleaner.CleanAsync(manifest, preserveInstallationLogs: false, includeInstallRoot: true, cancellationToken).ConfigureAwait(false);
+            // Keep the verified manifest until every other owned path has
+            // gone. If an install-root lock or another deletion fails, the
+            // next uninstall can validate this same allow-list and resume
+            // without guessing at paths from names.
+            await _dataCleaner.CleanAsync(
+                    manifest,
+                    preserveInstallationLogs: false,
+                    includeInstallRoot: true,
+                    preserveState: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await _dataCleaner.CleanAsync(
+                    manifest,
+                    preserveInstallationLogs: false,
+                    includeInstallRoot: false,
+                    preserveState: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
             return PlatformOperationResult.Success();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
@@ -62,4 +81,7 @@ public sealed class UninstallCoordinator
             return PlatformOperationResult.Failure($"Only part of the verified DSH Desktop data could be removed: {exception.Message}");
         }
     }
+
+    private bool HasAnyManagedPath() => _paths.ManagedPaths.Any(path =>
+        Directory.Exists(path.Value) || File.Exists(path.Value));
 }

@@ -4,10 +4,18 @@ using System.Text;
 
 namespace DshNgDesktop.Infrastructure;
 
-public sealed class ActivationRequestedEventArgs(string command) : EventArgs
+public sealed class InstanceCommandRequestedEventArgs(string command) : EventArgs
 {
     public string Command { get; } = command;
+
+    /// <summary>
+    /// Uninstall handlers set this only after they have scheduled the owned
+    /// runtime for shutdown. Activation commands are always accepted.
+    /// </summary>
+    public bool Accepted { get; set; }
 }
+
+public sealed record InstanceCommandRequestResult(bool Delivered, bool Accepted, string? Error = null);
 
 /// <summary>
 /// Owns one per-user mutex and a local named-pipe listener. A later launch can
@@ -16,6 +24,9 @@ public sealed class ActivationRequestedEventArgs(string command) : EventArgs
 public sealed class SingleInstanceCoordinator : IAsyncDisposable
 {
     private const string ActivationCommand = "activate";
+    private const string UninstallCommand = "uninstall";
+    private const string AcceptedResponse = "accepted";
+    private const string RejectedResponse = "rejected";
     private readonly string _mutexName;
     private readonly string _pipeName;
     private Mutex? _mutex;
@@ -32,7 +43,9 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
         _pipeName = $"dsh-ng-desktop-{nameHash}-activation";
     }
 
-    public event EventHandler<ActivationRequestedEventArgs>? ActivationRequested;
+    public event EventHandler<InstanceCommandRequestedEventArgs>? ActivationRequested;
+
+    public event EventHandler<InstanceCommandRequestedEventArgs>? UninstallRequested;
 
     public bool IsPrimary => _isPrimary;
 
@@ -59,23 +72,70 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
 
     public async Task<bool> RequestActivationAsync(CancellationToken cancellationToken = default)
     {
+        var result = await RequestCommandAsync(ActivationCommand, cancellationToken).ConfigureAwait(false);
+        return result.Delivered && result.Accepted;
+    }
+
+    /// <summary>
+    /// Delivers an uninstall request to the existing instance. The response
+    /// only confirms that the host accepted responsibility for shutdown; the
+    /// uninstall helper must still acquire the instance mutex before deleting
+    /// any product files.
+    /// </summary>
+    public Task<InstanceCommandRequestResult> RequestUninstallAsync(CancellationToken cancellationToken = default) =>
+        RequestCommandAsync(UninstallCommand, cancellationToken);
+
+    /// <summary>
+    /// Attempts to own the same per-user mutex used by the desktop host. An
+    /// uninstall helper holds this lease from the point at which no running
+    /// host remains until cleanup ends, preventing a fresh client from opening
+    /// files while they are being removed.
+    /// </summary>
+    public bool TryAcquireUninstallLock(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        _mutex ??= new Mutex(initiallyOwned: false, _mutexName);
+        try
+        {
+            return _mutex.WaitOne(timeout);
+        }
+        catch (AbandonedMutexException)
+        {
+            // The previous client died without releasing its handle. The OS
+            // has transferred ownership, so cleanup may safely continue.
+            return true;
+        }
+    }
+
+    private async Task<InstanceCommandRequestResult> RequestCommandAsync(string command, CancellationToken cancellationToken)
+    {
         try
         {
             await using var client = new NamedPipeClientStream(
                 ".",
                 _pipeName,
-                PipeDirection.Out,
+                PipeDirection.InOut,
                 PipeOptions.Asynchronous);
             await client.ConnectAsync(1_500, cancellationToken).ConfigureAwait(false);
 
-            var payload = Encoding.UTF8.GetBytes(ActivationCommand);
+            var payload = Encoding.UTF8.GetBytes(command);
             await client.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
             await client.FlushAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            var response = new byte[32];
+            var bytesRead = await client.ReadAsync(response, cancellationToken).ConfigureAwait(false);
+            var accepted = bytesRead > 0 && string.Equals(
+                Encoding.UTF8.GetString(response, 0, bytesRead),
+                AcceptedResponse,
+                StringComparison.Ordinal);
+            return new InstanceCommandRequestResult(true, accepted, accepted ? null : "The running DSH Desktop instance rejected the command.");
         }
         catch (Exception exception) when (exception is IOException or TimeoutException or OperationCanceledException)
         {
-            return false;
+            return new InstanceCommandRequestResult(false, false, exception.Message);
         }
     }
 
@@ -109,7 +169,7 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
         {
             await using var server = new NamedPipeServerStream(
                 _pipeName,
-                PipeDirection.In,
+                PipeDirection.InOut,
                 maxNumberOfServerInstances: 1,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
@@ -120,10 +180,10 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
                 var buffer = new byte[32];
                 var bytesRead = await server.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
                 var command = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                if (string.Equals(command, ActivationCommand, StringComparison.Ordinal))
-                {
-                    ActivationRequested?.Invoke(this, new ActivationRequestedEventArgs(command));
-                }
+                var accepted = DispatchCommand(command);
+                var response = Encoding.UTF8.GetBytes(accepted ? AcceptedResponse : RejectedResponse);
+                await server.WriteAsync(response, cancellationToken).ConfigureAwait(false);
+                await server.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -134,5 +194,23 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
                 // The peer disconnected before delivering a command. Continue listening.
             }
         }
+    }
+
+    private bool DispatchCommand(string command)
+    {
+        var args = new InstanceCommandRequestedEventArgs(command);
+        if (string.Equals(command, ActivationCommand, StringComparison.Ordinal))
+        {
+            ActivationRequested?.Invoke(this, args);
+            return true;
+        }
+
+        if (string.Equals(command, UninstallCommand, StringComparison.Ordinal) && UninstallRequested is { } uninstallRequested)
+        {
+            uninstallRequested.Invoke(this, args);
+            return args.Accepted;
+        }
+
+        return false;
     }
 }

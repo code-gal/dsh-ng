@@ -38,13 +38,24 @@ internal sealed class App : Application
             }
             else
             {
-                _setupRuntime = bootstrap.CreateRuntime(StateMachine);
-                var setupWindow = new SetupWindow(_setupRuntime);
-                setupWindow.InstallationCommitted += (_, _) => StartDesktopHost(desktop, bootstrap, _setupRuntime, background: false);
+                var setupRuntime = bootstrap.CreateRuntime(StateMachine);
+                _setupRuntime = setupRuntime;
+                var setupWindow = new SetupWindow(setupRuntime);
+                setupWindow.InstallationCommitted += (_, _) =>
+                {
+                    if (bootstrap.InstallerSession)
+                    {
+                        return;
+                    }
+
+                    StartDesktopHost(desktop, bootstrap, setupRuntime, background: false);
+                };
                 setupWindow.Closed += (_, _) =>
                 {
                     if (_desktopRuntime is null)
                     {
+                        bootstrap.StartInstalledClientAfterExit = bootstrap.InstallerSession &&
+                            setupRuntime.Coordinator.Result is { Succeeded: true };
                         desktop.Shutdown();
                     }
                 };
@@ -135,6 +146,25 @@ internal sealed class App : Application
     private async void ExitMenuItem_OnClick(object? sender, EventArgs eventArgs) => await RequestExitAsync().ConfigureAwait(true);
 
     private async Task RequestExitAsync()
+    {
+        await RequestShutdownAsync().ConfigureAwait(true);
+    }
+
+    internal bool TryRequestUninstall()
+    {
+        // The installer process owns a pre-commit transaction rather than an
+        // installed runtime. It must finish its own rollback path, so an
+        // external uninstall request is rejected until a desktop host exists.
+        if (_desktopRuntime is null)
+        {
+            return false;
+        }
+
+        _ = RequestShutdownAsync();
+        return true;
+    }
+
+    private async Task RequestShutdownAsync()
     {
         if (_shutdownRequested)
         {
