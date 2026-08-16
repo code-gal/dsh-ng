@@ -34,7 +34,7 @@
 - [x] **M3.1 原生安装引导**：实现 Avalonia 环境检测、阶段进度、日志摘要、停止和失败页面。
 - [x] **M3.2 事务提交与补偿**：DSH 健康检查通过后才提交；取消或失败时完整回滚。
 - [x] **M3.3 Windows 安装器**：实现当前用户安装、系统卸载注册和失败回滚。
-- [x] **M3.4 macOS 兼容性实现**：保留 macOS 平台接口、运行时和 UI 兼容性代码；不作为当前项目的安装包、签名、公证或发布承诺。
+- [x] **M3.4 macOS 兼容性实现**：实现 macOS 平台接口、运行时和 UI 兼容性代码，为同一安装事务和桌面生命周期提供跨平台基础。
 - [x] **M3.5 中断恢复与安装位置**：旧数据时提供保留数据的覆盖安装或明确确认的全新安装，并在中文安装引导中提供不创建目录的安装位置入口。
 - [x] **M3.6 意外取消可见失败**：将非用户触发的取消统一回滚并显示原生错误，不允许其终止安装器进程。
 - [x] **M3.7 全新安装清理恢复**：清理只读的产品私有缓存，不跟随重解析点；失败时显示受管根目录和具体失败项。
@@ -53,19 +53,38 @@
 - [x] **M5.1 卸载协作**：运行中应用接收带确认的卸载请求，销毁 WebView、停止 DSH，并由卸载助手等待实例完全退出。
 - [x] **M5.2 精确清理**：删除安装清单内的客户端、npx、DSH_HOME、日志和 WebView 数据，保留工作区和系统 Node。
 - [x] **M5.3 Windows 验收**：完成安装成功、失败回滚、自启、托盘、退出、卸载和残留检查。
-- [x] **M5.4 macOS 外部兼容性范围**：不纳入项目打包、发布、CI 或验收；有兴趣的开发者可自行从源码构建、运行和验证 macOS 兼容性。
-- [x] **M5.5 Native AOT 最小验证**：仅发布并运行验证本机 `win-x64` AOT 产物，确保 AOT/Trim 警告为零。
+- [x] **M5.4 macOS 平台基础**：完成 macOS 平台接口、运行时、托盘、进程组和安装事务的兼容性基础。
+- [x] **M5.5 Windows Native AOT 基线验证**：完成本机 `win-x64` AOT 产物验证，确保 AOT/Trim 警告为零。
 - [x] **M5.6 Windows .NET 依赖与源码构建**：验证 `win-x64` .NET 依赖安装器和普通源码构建复用相同行为。
-- [ ] **M5.7 GitHub Release**：推送经真实 Windows 验收的 `desktop-v<SemVer>` 标签，并确认自动 Release 仅包含 Windows `win-x64` 双安装器、SHA-256、变更说明、Node/.NET 前置条件和未签名社区预览说明。
+- [ ] **M5.7 Windows GitHub Release 基线验证**：推送经真实 Windows 验收的 `desktop-v<SemVer>` 标签，并确认 Windows 自动 Release 包含双安装器、SHA-256、前置条件和未签名社区预览说明。
 - [x] **M5.8 Windows 旧包装链清理**：移除 IExpress、`cmd.exe` 和 PowerShell 包装实现及失效构建入口；保留 Avalonia 安装事务、部署回滚、系统注册和卸载协调代码。
 - [x] **M5.9 Windows SetupHost 单文件入口**：新增无控制台、无 Avalonia 依赖的 Native AOT SetupHost；内嵌一份完整客户端负载，实施安全解压、文件清单与 SHA-256 校验、直接子进程同步等待、退出码传递和 staging 清理。
 - [x] **M5.10 Windows 显式安装会话**：普通客户端不再根据执行位置隐式进入安装模式；SetupHost 以显式参数启动唯一的 Avalonia 安装窗口，成功关闭后先清理临时负载再启动已安装客户端。
-- [x] **M5.11 Windows win-x64 双构建安装器体验**：AOT 与 .NET 依赖客户端包使用清晰文件名和同一 AOT SetupHost；安装过程不显示终端或第二套安装 UI，完成系统应用列表、自启动、失败回滚和卸载验收。macOS 仅保留外部开发者自行构建验证的兼容性说明。
+- [x] **M5.11 Windows win-x64 双构建安装器体验**：AOT 与 .NET 依赖客户端包使用清晰文件名和同一 AOT SetupHost；安装过程不显示终端或第二套安装 UI，完成系统应用列表、自启动、失败回滚和卸载验收。
 - [x] **M5.12 Windows 快捷方式闭环**：安装事务创建当前用户桌面和开始菜单快捷方式，失败回滚、全新安装清理与卸载精确删除快捷方式。
 - [x] **M5.13 隐藏窗口 WebView 回收**：关闭主窗口时销毁 NativeWebView 并保留 DSH/托盘，重新打开时按 Ready 快照重建 WebView，避免隐藏期间保留 WebView2 管理器进程。
-- [x] **M5.14 GitHub 自动发布**：`desktop-v*` 标签在 Windows Runner 构建双安装器和 SHA-256，生成提交/PR 摘要并创建未签名社区预览 Release，无需手工上传附件。
+- [x] **M5.14 Windows GitHub 自动发布基线**：`desktop-v*` 标签在 Windows Runner 构建双安装器和 SHA-256，并创建未签名社区预览 Release，无需手工上传附件。
 - [x] **M5.15 项目 README 收尾**：完善根 README 的生态总览与简要安装入口，完善桌面子项目 README 的功能、前置条件、安装、运行、卸载、开发与发布说明。
 - [x] **M5.16 运行中安装协作**：为保留数据的安装替换增加安装专用 IPC、维护锁和限时失败路径；运行中客户端先销毁 WebView、停止 DSH 并退出，安装器确认交接后才部署。安装事务整体在后台执行，避免交叉形态的停止等待和目录操作冻结 Avalonia UI；用户已完成 Windows 交叉安装验证。
 - [x] **M5.17 安装版本与构建形态识别**：将 SemVer 和 AOT/.NET 依赖元数据写入安装负载与清单，动态显示升级、修复、降级和构建形态切换提示，并兼容旧清单及早期错误路径化的版本字段；用户已确认升级、降级和构建形态切换检测正常。
 - [x] **M5.18 交叉构建单元测试**：补充跨 AOT/.NET 依赖运行中替换、IPC 超时/拒绝、维护锁、本地版本分类和错误版本字段迁移的简单测试；本地测试与用户交叉测试均已完成。
 - [x] **M5.19 AOT 安装选择页响应性**：将窗口打开阶段的旧清单读取与版本/构建形态分类移出 Avalonia UI 线程，读取失败显示可关闭错误；用户已确认 .NET 依赖版到 AOT 安装选择页和安装流程正常。
+
+## M6：跨平台未签名发行与人在环协作
+
+- [x] **M6.0 发行与协作 Spec 定稿**：发行范围固定为 Windows `win-x64` 与 macOS `osx-arm64`；版本由维护者通过 Changelog 和标签决定，发布流程按规划、人工批准、执行、验收和人工发布批准拆分。
+- [x] **M6.1 规划门禁（强模型）**：已检查现有 macOS 打包资料、Windows 构建入口、平台安装边界和 Release 工作流，确认 macOS `pkg` 基础、当前用户安装事务和 Windows 双安装器可复用；执行范围包含移除 macOS 签名/公证、补足 macOS 安装元数据传递、跨 Runner 汇总发布及文档更新。
+- [ ] **M6.2 人工批准实施计划**：维护者审阅 M6.1 的计划，明确选择执行 Agent/模型并批准后续任务。
+- [ ] **M6.3 macOS `osx-arm64` 未签名安装包（执行模型）**：将现有 macOS 打包入口收敛为单一 Native AOT `pkg`，移除签名与公证输入及命令，生成可复现的 SHA-256，并通过显式安装参数将 SemVer 和 AOT 构建形态写入 macOS 安装清单；保留当前用户安装事务。
+- [ ] **M6.4 跨平台构建与发布（执行模型）**：实现 Changelog/标签校验、Windows `win-x64` 双安装器和 macOS `osx-arm64` AOT 包的并行构建，以及仅在全部成功后创建 Release 的汇总任务。
+- [ ] **M6.5 发行说明与文档（执行模型）**：添加并维护桌面项目 Changelog；使 Release 正文采用精炼 Changelog、提交数量和比较链接；更新打包文档，并在根 README 引用 `dsh-ng-desktop-install-white.png`、在项目 README 引用其余三张截图。
+- [ ] **M6.6 验收门禁（强模型）**：独立核对实现、工作流最小权限、产物命名、SHA-256、未签名风险说明、Changelog/标签一致性和所有自动检查证据；记录未覆盖风险。
+- [ ] **M6.7 人工验收与发布批准**：在真实 Windows `win-x64` 和 macOS `osx-arm64` 机器完成安装、运行、托盘、卸载和安全提示验收；维护者确认结果并选择版本号后才允许推送发行标签。
+- [ ] **M6.8 首次跨平台发行验证**：推送经批准的 `desktop-v<SemVer>` 标签，确认 Release 只含 Windows `win-x64` AOT/.NET 安装器、macOS `osx-arm64` AOT `pkg`、各自 SHA-256、Changelog 更新说明和提交范围摘要。
+
+### M6.1 执行计划
+
+1. **macOS 包**：将 `build-installer.sh` 固定为 `osx-arm64` + Native AOT，改用项目 NuGet 配置恢复并显式传入版本；删除 `codesign`、`productsign`、`notarytool` 和 `stapler`。构建时从模板生成 postinstall 脚本，使 bootstrap 收到 `--package-version <SemVer>` 与 `--build-flavor Aot`；应用入口在有效 macOS 安装会话中读取并保存该元数据。同步修正仅描述签名假设的注释。
+2. **工作流**：采用 `prepare -> {build-windows, build-macos} -> publish`。准备任务校验标签和 Changelog 条目；Windows 任务继续在 `windows-latest` 构建两个 EXE，macOS 任务固定在 ARM64 `macos-14` 构建一个 PKG。两个任务分别上传附件，发布任务仅在二者成功后下载并精确核对六个文件，再创建 Release。
+3. **Release 正文**：发布任务从 Changelog 提取目标版本的小节，附加从上一个桌面标签到当前标签的提交数量和 GitHub 比较链接；使用 `gh release create --notes-file`，不使用 `--generate-notes`、逐条提交列表或自动版本写入。
+4. **文档与验收**：新增 Changelog 模板并更新打包/发布指南与两份 README 截图。自动验证包括 Bash 语法检查、工作流 YAML 结构检查、Windows 现有构建及 macOS Runner AOT/PKG 构建；人工验证包括 Windows `win-x64` 与 macOS `osx-arm64` 的安装、启动、托盘、卸载、SHA-256 与安全提示。任一构建或人工验收失败时不推送发行标签；已发布版本只能通过新版本修复，不能替换附件。

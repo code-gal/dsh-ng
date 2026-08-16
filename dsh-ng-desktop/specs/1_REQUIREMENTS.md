@@ -10,28 +10,29 @@
 
 ### 2.1 正式发行形态
 
-- Windows 是唯一的安装包、发布和验收平台；发布物共享安装流程与桌面运行逻辑。
-- macOS 保留同一产品状态机和平台适配接口的兼容性实现，但不属于当前项目的打包、发布或验证承诺；有兴趣的开发者可自行在 macOS 构建和验证。
+- 项目受支持的发行目标只有 Windows `win-x64` 和 macOS `osx-arm64`；两者共享安装流程与桌面运行逻辑。Windows ARM64、macOS Intel 及其他架构仅允许用户从源码自行构建，不生成、发布或验收对应发行物。
 - Windows 正式下载物是唯一的 `DshDesktopSetup.exe` 单文件入口。它只承担无界面的负载校验、解压、进程等待和临时目录清理；安装过程中唯一可见的产品界面是 Avalonia 原生安装引导，不叠加第二套安装向导。
+- macOS 正式下载物是当前用户安装的 `pkg`；其安装后脚本只启动同一 Avalonia 安装事务，将客户端部署到用户的 `~/Applications/DSH Desktop.app`，不另行实现第二套安装向导。
 - 正式安装包只通过项目 GitHub Releases 发布，由用户手动下载和安装；不规划 Microsoft Store、WinGet 或客户端内更新渠道。
-- GitHub Release 必须提供版本化产物、SHA-256、系统与 Node 前置条件和签名状态；已发布的同名版本文件不得替换。当前允许发布明确标记为“未签名社区预览”的 Windows 安装器，Release 必须醒目说明 SmartScreen 风险和校验步骤，且不得要求用户导入根证书或发布者证书。
+- GitHub Release 必须提供版本化产物、SHA-256、系统与 Node 前置条件和签名状态；已发布的同名版本文件不得替换。Windows 和 macOS 当前均允许发布明确标记为“未签名社区预览”的安装包：Windows Release 必须说明 SmartScreen 风险，macOS Release 必须说明 Gatekeeper 警告或拦截风险、一次性人工打开要求及 SHA-256 校验步骤；不得要求用户导入根证书或发布者证书，也不得指导用户全局关闭系统安全保护。
 - 本仓库的每个可发行子项目独立维护版本和 GitHub Release；桌面客户端的 Release 标签固定为 `desktop-v<SemVer>`，例如 `desktop-v0.9.1`，不得使用会与插件或其他子项目冲突的仓库级裸版本标签。
-- 维护者必须在推送发行标签前，于真实 Windows `win-x64` 环境完成人在环安装、运行和卸载验收。推送 `desktop-v<SemVer>` 标签后，GitHub Actions 在干净的 Windows Runner 上重建 AOT 与 .NET 依赖安装器、生成 SHA-256、汇总上一个桌面标签以来的提交与合并请求，并自动创建同名 GitHub Release 和上传附件；不再手动上传安装包。
-- 当前自动发布只生成明确标记的未签名社区预览，不向 GitHub Actions 提供签名私钥。未来启用正式代码签名时，必须改为受控签名环境或经过审批的签名任务，不能把长期签名凭据交给普通 CI Runner。
+- `dsh-ng-desktop/CHANGELOG.md` 是发行更新说明的唯一来源。维护者自主选择 SemVer 的 major、minor 或 patch，并在推送标签前将同版本条目及精炼的用户可见更新写入 Changelog；CI 不根据提交自动推断、修改或提交版本号。标签必须指向包含同版本 Changelog 条目的提交。
+- 维护者必须在推送发行标签前，于真实 Windows `win-x64` 和 macOS `osx-arm64` 环境分别完成人在环安装、运行和卸载验收。推送 `desktop-v<SemVer>` 标签后，GitHub Actions 分别在干净的 Windows 与 macOS Runner 上重建支持的安装包和 SHA-256；仅当全部构建成功时，发布任务才创建同名 GitHub Release、上传附件，并写入对应 Changelog 条目、上一个桌面标签以来的提交数量与比较链接。Release 不逐条罗列每次提交或自动生成详细提交日志。
+- 当前自动发布只生成明确标记的未签名社区预览，不向 GitHub Actions 提供签名私钥、Apple ID 或公证凭据。未来启用正式代码签名或公证时，必须改为受控签名环境或经过审批的签名任务，不能把长期签名凭据交给普通 CI Runner。
 - 本地构建安装包及校验值只写入 `dsh-ng-desktop/artifacts/installer/`，该目录属于本地发行物，绝不进入 Git 源码。
-- macOS 不发布任何安装包，也不作为当前项目的验证目标；自签名、ad-hoc 签名或要求用户绕过 Gatekeeper 的包不属于本项目的发布流程。
+- macOS `osx-arm64` 包不签名、不公证、不使用自签名或 ad-hoc 身份；Release 必须如实提示 Gatekeeper 风险。GitHub Actions 只使用 macOS Runner 自带的系统打包工具，不保存任何 Apple 凭据。
 - 正式发行不以“解压即用”或单个便携程序替代安装器，因为便携模式无法完整保证事务回滚、系统卸载、自启动注册和残留清理。
 
 ### 2.2 构建形态
 
-- 每个 Windows `win-x64` 发布版本必须同时提供两种安装器：Native AOT 自包含客户端包和 .NET 依赖客户端包；两者使用相同安装事务、产品 ID 和卸载逻辑，但文件名必须明确标识已安装客户端的构建形态。macOS 不生成项目发行物。
+- 每个 Windows `win-x64` 发布版本必须同时提供两种安装器：Native AOT 自包含客户端包和 .NET 依赖客户端包；两者使用相同安装事务、产品 ID 和卸载逻辑，但文件名必须明确标识已安装客户端的构建形态。每个 macOS `osx-arm64` 发布版本只提供 Native AOT、自包含 `pkg`，复用同一产品状态机、产品 ID 和卸载逻辑。
 - Windows `SetupHost` 始终使用不依赖 Avalonia 的 Native AOT、自包含 `WinExe`，保证两种安装包都能在没有命令行窗口的情况下完成负载准备并显示明确的引导失败信息。
 - Native AOT 包中的桌面客户端及全部 .NET 辅助程序自包含构建，目标机器无需安装 .NET。
 - .NET 依赖包安装框架依赖桌面客户端，目标机器必须预先安装匹配主版本的 .NET Desktop Runtime；`SetupHost` 在启动 Avalonia 负载前检测此前置条件。该要求必须出现在 GitHub Release 和安装包文件名中。
 - Native AOT 是代码设计和正式发布的硬性准入条件，不得先编写依赖 JIT、动态代码生成或未声明反射的实现，再以非 AOT 产物绕过。
 - .NET 依赖包用于已有 .NET 运行时的环境，以减小下载体积；它不是 AOT 正式准入的替代品。
 - 支持开发者安装 .NET SDK 后直接从源码执行普通构建，并以显式 `--development` 参数运行开发宿主；未带参数的 `DshNgDesktop.exe` 只代表已安装客户端，不根据执行位置猜测安装角色。
-- Windows 正式构建和发布固定为 `win-x64`；macOS 保留源码兼容性，不设项目管理的目标 RID 构建矩阵。
+- Windows 正式构建和发布固定为 `win-x64`，macOS 固定为 `osx-arm64`；不维护 Windows ARM64、macOS Intel 或其他 RID 的项目构建、发布和验收矩阵。
 - 每个安装负载必须携带客户端 SemVer 和构建形态（`AOT` 或 `.NET 依赖`）元数据；安装清单保存该元数据，供后续安装器在本地识别升级、同版修复、降级和构建形态切换。旧版缺少元数据时必须以未知版本兼容处理，不得阻断安全的保留数据安装。
 
 ### 2.3 安装事务
@@ -133,7 +134,7 @@
 7. 保留用户选择的所有工作区目录及其中的全部文件，不尝试回滚 DSH 曾对工作区执行的修改。
 8. 保留系统 Node.js、用户 npm 配置、共享 npm 缓存和非本客户端创建的进程。
 
-Windows 通过系统卸载入口执行完整清理。macOS 兼容性代码不构成项目发行或清理验收承诺。
+Windows 与 macOS `osx-arm64` 均通过其受管安装入口执行完整清理；其他平台兼容性代码不构成项目发行或清理验收承诺。
 
 ## 7. 非目标
 
@@ -142,6 +143,8 @@ Windows 通过系统卸载入口执行完整清理。macOS 兼容性代码不构
 - 远程 DSH 连接。
 - 客户端内的自启动开关。
 - Linux 正式发行。
+- Windows ARM64、macOS Intel 和其他未列出的处理器架构的安装包、CI 构建与发行验收。
+- 当前版本的 macOS 签名、公证或要求用户导入证书的发行路径。
 - 删除或恢复用户工作区内容。
 - Microsoft Store、WinGet 和其他应用商店发行。
 - 客户端内下载或安装客户端更新。
