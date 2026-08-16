@@ -58,7 +58,7 @@ Windows `win-x64` 产出安装器和应用包。安装流程、状态机、日�
 - 客户端文件在 `Committed` 前属于可回滚资源。
 - `ProvisioningDsh` 使用原生窗口展示单一主状态、单一已等待时长和经整理的实时摘要；npx 无稳定的进度 API，因此只显示“检查 DSH 更新”、实际下载/解压/安装所触发的“更新 DSH”和启动验证等可证明的阶段，不伪造下载百分比。摘要日志面板自动换行、紧凑呈现且可选择复制；仅当视图位于末尾且没有文本选择时才自动跟随新内容。
 - `WaitingForWebUi` 必须验证返回内容属于 DSH Web UI。
-- 自启动与系统卸载注册放在事务末尾；部分失败必须执行补偿操作。
+- 自启动、Windows 当前用户桌面/开始菜单快捷方式与系统卸载注册放在事务末尾；部分失败必须执行补偿操作。
 - 失败日志先供用户查看，退出安装器时再按失败清理策略处理。
 
 ### 4.1 SetupCoordinator 与部署边界
@@ -72,7 +72,7 @@ Windows `win-x64` 产出安装器和应用包。安装流程、状态机、日�
 - SetupHost 不复制产品文件、不注册自启动或卸载入口、不启动 DSH，也不解释安装事务的业务阶段；这些行为仍由 `SetupCoordinator` 独占。它只在负载校验、解压或子进程创建失败时显示系统原生错误对话框。
 - Avalonia 安装引导以退出码向 SetupHost 报告结果：提交成功且用户关闭完成页后返回 `0`；失败、停止或回滚完成后返回非零。成功时 SetupHost 先清理 staging，再从受管 `InstallRoot` 启动已安装客户端；失败时只清理 staging 并原样返回失败码。
 - `Preflight` 只把平台、Node、npx 与产品数据父目录的错误作为阻断条件；端口冲突和 WebView 缺失以可理解的预警显示，DSH 端口由 Supervisor 在后续阶段迁移。
-- 事务完成顺序固定为：前置检测、部署客户端、启动并验证 DSH Web UI、注册当前用户自启动、注册平台卸载入口、保存 `InstallManifest`、提交。未到 `Committed` 的资源必须按相反顺序补偿。
+- 事务完成顺序固定为：前置检测、部署客户端、启动并验证 DSH Web UI、注册当前用户自启动、注册 Windows 当前用户桌面/开始菜单快捷方式、注册平台卸载入口、保存 `InstallManifest`、提交。未到 `Committed` 的资源必须按相反顺序补偿。
 - 用户主动停止和外部边界产生的意外取消必须分别记录，但两者都必须进入 `Stopping -> RollingBack -> Failed` 并保留原生失败页；不得让 `OperationCanceledException` 从安装窗口的异步事件处理器逸出导致进程退出。
 - 安装窗口仅可在尚未请求停止时将关闭操作转换为“停止并回滚”确认；一旦已进入 `Stopping` 或 `RollingBack`，所有关闭请求均取消并保留当前回滚视图，直至 `Failed` 或 `Committed` 终态已经呈现。
 - 回滚只接受本次部署记录和内存中的、已通过 `AppPaths` 校验的 `InstallManifest`。它先停止 Supervisor，再注销自启动与卸载入口，随后删除清单内目录和本次部署目录；不根据名称、PATH 或工作区内容扩展删除范围。
@@ -177,10 +177,11 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - Windows 在 WebView 环境创建前设置私有 `UserDataFolder`。
 - macOS 使用固定 `DataStoreIdentifier` 隔离 WKWebView 持久数据；卸载通过平台清理能力删除。
 - WebView 销毁且浏览器子进程退出后，卸载器才可删除相关数据。
+- 正常窗口关闭在隐藏窗口前将 `NativeWebView` 从视觉树移除并释放宿主引用，使 WebView2 管理器进程可在没有其他 WebView 引用后退出；窗口重新显示且 Coordinator 仍为 `Ready` 时创建新的 `NativeWebView` 并导航到同一健康地址。
 
 ### 6.3 托盘和单实例
 
-- Avalonia 应用使用显式退出模式，关闭主窗口只隐藏窗口。
+- Avalonia 应用使用显式退出模式，关闭主窗口销毁业务 WebView 后只隐藏窗口；DSH、托盘和客户端宿主继续运行。
 - 托盘命令最少包含“打开 DSH”和“退出”；macOS 遵循菜单栏原生点击行为。
 - 第二实例通过本机 IPC 通知第一实例显示窗口，然后退出。
 - 自启动使用 `--background` 参数；后台启动时创建托盘并启动 DSH，不显示主窗口。
@@ -201,6 +202,7 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - 提供面向当前用户的安装器，安装目录位于用户可管理的应用目录。
 - GitHub Release 中每种构建形态只提供一个 `DshDesktopSetup.exe` 下载物；SetupHost 内嵌完整客户端负载，安装时只显示一套 Avalonia 原生引导 UI。
 - 注册系统卸载入口和当前用户自启动项。
+- 使用 Win32 Shell Link COM 接口为当前用户创建桌面和开始菜单快捷方式；快捷方式目标、工作目录与图标均指向受管 `InstallRoot`，不调用 PowerShell、`cmd.exe` 或脚本包装链。
 - 安装器、主程序、卸载器共享产品 ID 和安装清单。
 - 卸载器在应用退出后删除剩余文件，不使用应用本体自删或按名称杀进程。
 - 卸载入口从安装目录复制最小卸载助手到临时目录；助手向现有实例发送卸载请求并在限定时间内等待退出。只有不存在现有实例或已观察到其互斥体释放后，才执行清理。
@@ -216,8 +218,8 @@ Windows 使用 `%LocalAppData%` 下的产品专属根目录；macOS 分别使用
 - GitHub Release 是唯一正式下载入口，不创建 Microsoft Store、WinGet 或客户端更新清单。
 - 每个 Windows `win-x64` 版本分别上传 AOT 和 .NET 依赖安装器；.NET 依赖包明确标记为需要 .NET Desktop Runtime。macOS 不上传安装包。
 - Release 同时提供 SHA-256 校验值、变更说明、系统与 Node 前置条件和签名状态。未签名 Windows 社区预览必须明确标记 SmartScreen 风险、校验步骤和“不得导入根证书”。
-- 正式发行采用目标操作系统上的本机构建与手动上传。桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
-- 当前不包含自动发布的 GitHub Actions 工作流。未来如加入 CI，只可作为不持有签名私钥的构建/测试门禁，并以路径过滤和 `desktop-v*` 标签限定到本子项目；它不能代替目标机器上的安装、卸载、签名或未签名社区预览风险验收。
+- 桌面客户端使用 `desktop-v<SemVer>` 作为 Git 标签和 Release 名称；安装器文件使用 `DSH-Desktop-Setup-v<SemVer>-<RID>`，使其可与其他子项目的发行物并存。`artifacts/installer/` 是本地输出目录，必须由 Git 忽略。
+- `desktop-v*` 标签触发专属 Windows GitHub Actions 工作流：校验标签 SemVer，从标签源码构建 `win-x64` AOT 与 .NET 依赖安装器，生成 SHA-256，以前一个 `desktop-v*` 标签为范围生成提交摘要并调用 GitHub 自动 Release Notes，随后创建未签名社区预览 Release 并上传四个附件。工作流只授予 `contents: write`，不持有签名私钥，也不代替推送标签前在真实目标机器上的安装、卸载和风险验收。
 - 客户端不查询 GitHub Release，也不提示或安装客户端更新；用户自行获取新版本。
 
 ## 8. 日志与错误

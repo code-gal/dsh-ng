@@ -1,0 +1,125 @@
+name: DSH Desktop Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Windows installers
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate desktop release tag
+        id: version
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^desktop-v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$') {
+            throw "Desktop release tags must use desktop-v<SemVer>: $tag"
+          }
+          "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - name: Build AOT and .NET installers
+        run: |
+          & .\dsh-ng-desktop\Installer\Packaging\windows\Build-Installer.ps1 `
+            -Mode Aot `
+            -RuntimeIdentifier win-x64 `
+            -Version '${{ steps.version.outputs.version }}'
+          & .\dsh-ng-desktop\Installer\Packaging\windows\Build-Installer.ps1 `
+            -Mode DotNet `
+            -RuntimeIdentifier win-x64 `
+            -Version '${{ steps.version.outputs.version }}'
+
+          $expectedNames = @(
+            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-aot.exe',
+            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-aot.exe.sha256',
+            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-dotnet.exe',
+            'DSH-Desktop-Setup-v${{ steps.version.outputs.version }}-win-x64-dotnet.exe.sha256'
+          )
+          foreach ($name in $expectedNames) {
+            $path = Join-Path 'dsh-ng-desktop\artifacts\installer' $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "The release artifact was not created: $path"
+            }
+          }
+
+      - name: Create GitHub Release and upload artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $previousTag = git tag --list 'desktop-v*' --sort=-version:refname |
+            Where-Object { $_ -ne $tag } |
+            Select-Object -First 1
+          $range = if ([string]::IsNullOrWhiteSpace($previousTag)) { $tag } else { "$previousTag..$tag" }
+          $commits = @(git log $range --no-merges --pretty=format:'- %h %s' -- dsh-ng-desktop README.md)
+          if ($commits.Count -eq 0) {
+            $commits = @('- 本标签范围内没有独立的桌面项目提交。')
+          }
+
+          $notes = @"
+          ## 安装前必读
+
+          本版本是 **未签名社区预览**。Windows SmartScreen 可能显示警告；请只从本 Release 下载，并使用随附的 `.sha256` 文件核对 SHA-256。不要导入任何根证书或发布者证书。
+
+          - 系统：Windows x64
+          - 前置条件：系统已安装可用的 Node.js 与 npx
+          - `-aot.exe`：无需预装 .NET Runtime
+          - `-dotnet.exe`：需要 .NET 10 Desktop Runtime
+
+          ## 更新综述
+
+          从桌面项目上一个发行标签到 **$tag** 共收录 $($commits.Count) 条非合并提交；下方先列出提交摘要，随后附上 GitHub 根据合并请求和贡献者自动生成的变更记录。
+
+          ## 提交摘要
+
+          $($commits -join "`n")
+          "@
+
+          $artifacts = @(
+            Get-ChildItem -LiteralPath 'dsh-ng-desktop\artifacts\installer' -File |
+              Where-Object { $_.Name -like '*.exe' -or $_.Name -like '*.sha256' } |
+              Sort-Object Name |
+              ForEach-Object FullName
+          )
+          $arguments = @(
+            'release', 'create', $tag,
+            '--verify-tag',
+            '--fail-on-no-commits',
+            '--prerelease',
+            '--title', "DSH Desktop $tag（未签名社区预览）",
+            '--generate-notes',
+            '--notes', $notes
+          )
+          if (-not [string]::IsNullOrWhiteSpace($previousTag)) {
+            $arguments += @('--notes-start-tag', $previousTag)
+          }
+
+          & gh @arguments @artifacts
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release creation failed with exit code $LASTEXITCODE."
+          }

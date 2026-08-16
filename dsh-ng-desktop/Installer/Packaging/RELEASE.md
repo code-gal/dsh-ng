@@ -19,11 +19,12 @@ Windows 旧 IExpress 构建入口已经移除。当前采用“未签名社区�
 
 macOS 不属于当前项目的打包、发布或验证范围。仓库保留的兼容性代码仅供外部开发者自行从源码构建验证；不得生成或上传项目 macOS Release 附件。
 
-## 上传与验收
+## 自动发布与验收
 
 1. 在 Windows `win-x64` 目标系统通过安装器完成安装、停止/回滚、托盘、自启动、卸载和残留检查。macOS 不属于当前项目验收。
 2. 创建并推送 `desktop-v0.9.1` 标签。
-3. 在 GitHub 手动创建同名 Release，上传对应安装器和 `.sha256` 文件，并写明 Node.js 前置条件、签名状态和变更说明。未签名 Windows Release 必须在标题和首段标记“未签名社区预览”，明确 SmartScreen 风险、SHA-256 校验步骤和“不导入根证书”。
-4. 安装器、SHA-256、签名文件和 `artifacts/installer/` 均不得提交到 Git。
+3. `.github/workflows/desktop-release.yml` 在 Windows Runner 重建 AOT 与 .NET 依赖安装器，生成 `.sha256`，汇总上一个桌面标签以来的提交，并结合 GitHub 自动 Release Notes 创建同名预发布 Release 和上传四个附件。
+4. 检查 Release 标题与首段已标记“未签名社区预览”，包含 Node.js/.NET 前置条件、SmartScreen 风险、SHA-256 校验步骤和“不导入根证书”。自动任务失败时修复源码或工作流并发布新版本，不替换已发布的标签或附件。
+5. 安装器、SHA-256、签名文件和 `artifacts/installer/` 均不得提交到 Git，也不再由维护者手工上传。
 
-GitHub Actions 目前不承担本项目发版；未来可增加不持有签名密钥的项目级构建验证，但不能代替以上目标机器验收。
+GitHub Actions 不持有签名密钥，只负责从已验收标签重现未签名产物和发布；它不能代替以上目标机器验收。未来启用正式 Authenticode 签名时，必须改用受控签名环境或经过审批的签名任务。

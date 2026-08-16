@@ -31,6 +31,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
     private bool _preserveExistingDataOnRollback;
     private bool _retainExistingRegistrations;
     private bool _startupRegistrationAttempted;
+    private bool _shortcutRegistrationAttempted;
     private bool _installationRegistrationAttempted;
     private InstallManifest? _manifest;
     private ClientDeploymentResult? _deploymentResult;
@@ -125,7 +126,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
                     .ConfigureAwait(false);
             }
 
-            Transition(ApplicationState.Registering, SetupStage.Registering, "正在注册 DSH Desktop", "正在注册当前用户开机启动和系统卸载入口。");
+            Transition(ApplicationState.Registering, SetupStage.Registering, "正在注册 DSH Desktop", "正在注册当前用户开机启动、桌面/开始菜单快捷方式和系统卸载入口。");
             if (!_retainExistingRegistrations)
             {
                 _startupRegistrationAttempted = true;
@@ -133,7 +134,20 @@ public sealed class SetupCoordinator : IAsyncDisposable
                     new StartupRegistration(_paths.ProductId, _options.InstalledExecutablePath, ["--background"]),
                     transactionToken).ConfigureAwait(false);
                 EnsureSucceeded(startup, "无法注册当前用户开机启动项。");
+            }
 
+            _shortcutRegistrationAttempted = true;
+            var shortcuts = await _platformServices.RegisterShortcutsAsync(
+                new ShortcutRegistration(
+                    _options.DisplayName,
+                    _options.InstalledExecutablePath,
+                    _paths.InstallRoot,
+                    "打开 DSH Desktop"),
+                transactionToken).ConfigureAwait(false);
+            EnsureSucceeded(shortcuts, "无法创建当前用户桌面和开始菜单快捷方式。");
+
+            if (!_retainExistingRegistrations)
+            {
                 _installationRegistrationAttempted = true;
                 var installation = await _platformServices.RegisterInstallationAsync(
                     new InstallationRegistration(_paths.ProductId, _options.DisplayName, _paths.InstallRoot, _options.UninstallCommand),
@@ -143,7 +157,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
 
             await _manifest.SaveAsync(_paths, transactionToken).ConfigureAwait(false);
             await CompleteClientReplacementAsync(CancellationToken.None).ConfigureAwait(false);
-            await _log.InformationAsync(AppLogStream.Installation, "setup-registered", "已提交开机启动、卸载注册和安装清单。", transactionToken)
+            await _log.InformationAsync(AppLogStream.Installation, "setup-registered", "已提交开机启动、桌面/开始菜单快捷方式、卸载注册和安装清单。", transactionToken)
                 .ConfigureAwait(false);
             Transition(ApplicationState.Committed, SetupStage.Committed, "安装完成", "DSH Desktop 已安装完成，本地 DSH Web 界面健康检查已通过。", isTerminal: true);
             await FlushProgressLogsAsync().ConfigureAwait(false);
@@ -225,19 +239,27 @@ public sealed class SetupCoordinator : IAsyncDisposable
             rollbackErrors.Add($"停止 DSH：{exception.Message}");
         }
 
-        if (_startupRegistrationAttempted)
-        {
-            await CompensateAsync(
-                () => _platformServices.UnregisterStartupAsync(_paths.ProductId, CancellationToken.None),
-                "开机启动项",
-                rollbackErrors).ConfigureAwait(false);
-        }
-
         if (_installationRegistrationAttempted)
         {
             await CompensateAsync(
                 () => _platformServices.UnregisterInstallationAsync(_paths.ProductId, CancellationToken.None),
                 "系统卸载入口",
+                rollbackErrors).ConfigureAwait(false);
+        }
+
+        if (_shortcutRegistrationAttempted && !_retainExistingRegistrations)
+        {
+            await CompensateAsync(
+                () => _platformServices.UnregisterShortcutsAsync(_options.DisplayName, CancellationToken.None),
+                "桌面和开始菜单快捷方式",
+                rollbackErrors).ConfigureAwait(false);
+        }
+
+        if (_startupRegistrationAttempted)
+        {
+            await CompensateAsync(
+                () => _platformServices.UnregisterStartupAsync(_paths.ProductId, CancellationToken.None),
+                "开机启动项",
                 rollbackErrors).ConfigureAwait(false);
         }
 
@@ -345,6 +367,8 @@ public sealed class SetupCoordinator : IAsyncDisposable
         {
             var startupRemoval = await _platformServices.UnregisterStartupAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
             EnsureRecoveryRemovalSucceeded(startupRemoval, "开机启动项");
+            var shortcutRemoval = await _platformServices.UnregisterShortcutsAsync(_options.DisplayName, cancellationToken).ConfigureAwait(false);
+            EnsureRecoveryRemovalSucceeded(shortcutRemoval, "桌面和开始菜单快捷方式");
             var installationRemoval = await _platformServices.UnregisterInstallationAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
             EnsureRecoveryRemovalSucceeded(installationRemoval, "系统卸载入口");
             await _dataCleaner.CleanAsync(

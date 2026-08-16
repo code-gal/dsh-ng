@@ -52,12 +52,16 @@
 - [x] **M5.0 回滚窗口关闭竞争**：停止/回滚阶段拦截再次关闭请求，保留窗口直至回滚终态和清理结果可见。
 - [x] **M5.1 卸载协作**：运行中应用接收带确认的卸载请求，销毁 WebView、停止 DSH，并由卸载助手等待实例完全退出。
 - [x] **M5.2 精确清理**：删除安装清单内的客户端、npx、DSH_HOME、日志和 WebView 数据，保留工作区和系统 Node。
-- [ ] **M5.3 Windows 验收**：完成安装成功、失败回滚、自启、托盘、退出、卸载和残留检查。
+- [x] **M5.3 Windows 验收**：完成安装成功、失败回滚、自启、托盘、退出、卸载和残留检查。
 - [x] **M5.4 macOS 外部兼容性范围**：不纳入项目打包、发布、CI 或验收；有兴趣的开发者可自行从源码构建、运行和验证 macOS 兼容性。
-- [ ] **M5.5 Native AOT 最小验证**：仅发布并运行验证本机 `win-x64` AOT 产物，确保 AOT/Trim 警告为零。
-- [ ] **M5.6 Windows .NET 依赖与源码构建**：验证 `win-x64` .NET 依赖安装器和普通源码构建复用相同行为。
-- [ ] **M5.7 GitHub Release**：仅上传 Windows `win-x64` 版本化安装包、SHA-256、变更说明、Node/.NET 前置条件和未签名社区预览说明。
+- [x] **M5.5 Native AOT 最小验证**：仅发布并运行验证本机 `win-x64` AOT 产物，确保 AOT/Trim 警告为零。
+- [x] **M5.6 Windows .NET 依赖与源码构建**：验证 `win-x64` .NET 依赖安装器和普通源码构建复用相同行为。
+- [ ] **M5.7 GitHub Release**：推送经真实 Windows 验收的 `desktop-v<SemVer>` 标签，并确认自动 Release 仅包含 Windows `win-x64` 双安装器、SHA-256、变更说明、Node/.NET 前置条件和未签名社区预览说明。
 - [x] **M5.8 Windows 旧包装链清理**：移除 IExpress、`cmd.exe` 和 PowerShell 包装实现及失效构建入口；保留 Avalonia 安装事务、部署回滚、系统注册和卸载协调代码。
 - [x] **M5.9 Windows SetupHost 单文件入口**：新增无控制台、无 Avalonia 依赖的 Native AOT SetupHost；内嵌一份完整客户端负载，实施安全解压、文件清单与 SHA-256 校验、直接子进程同步等待、退出码传递和 staging 清理。
 - [x] **M5.10 Windows 显式安装会话**：普通客户端不再根据执行位置隐式进入安装模式；SetupHost 以显式参数启动唯一的 Avalonia 安装窗口，成功关闭后先清理临时负载再启动已安装客户端。
 - [x] **M5.11 Windows win-x64 双构建安装器体验**：AOT 与 .NET 依赖客户端包使用清晰文件名和同一 AOT SetupHost；安装过程不显示终端或第二套安装 UI，完成系统应用列表、自启动、失败回滚和卸载验收。macOS 仅保留外部开发者自行构建验证的兼容性说明。
+- [x] **M5.12 Windows 快捷方式闭环**：安装事务创建当前用户桌面和开始菜单快捷方式，失败回滚、全新安装清理与卸载精确删除快捷方式。
+- [x] **M5.13 隐藏窗口 WebView 回收**：关闭主窗口时销毁 NativeWebView 并保留 DSH/托盘，重新打开时按 Ready 快照重建 WebView，避免隐藏期间保留 WebView2 管理器进程。
+- [x] **M5.14 GitHub 自动发布**：`desktop-v*` 标签在 Windows Runner 构建双安装器和 SHA-256，生成提交/PR 摘要并创建未签名社区预览 Release，无需手工上传附件。
+- [x] **M5.15 项目 README 收尾**：完善根 README 的生态总览与简要安装入口，完善桌面子项目 README 的功能、前置条件、安装、运行、卸载、开发与发布说明。

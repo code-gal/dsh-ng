@@ -32,6 +32,12 @@ public sealed record InstallationRegistration(
     string InstallRoot,
     string UninstallCommand);
 
+public sealed record ShortcutRegistration(
+    string DisplayName,
+    string ExecutablePath,
+    string WorkingDirectory,
+    string Description);
+
 /// <summary>
 /// Represents only a process collection created by this application. It must
 /// never enumerate or claim unrelated Node, npm or npx processes.
@@ -74,5 +80,13 @@ public interface IPlatformServices
 
     Task<PlatformOperationResult> UnregisterInstallationAsync(
         string productId,
+        CancellationToken cancellationToken = default);
+
+    Task<PlatformOperationResult> RegisterShortcutsAsync(
+        ShortcutRegistration registration,
+        CancellationToken cancellationToken = default);
+
+    Task<PlatformOperationResult> UnregisterShortcutsAsync(
+        string displayName,
         CancellationToken cancellationToken = default);
 }

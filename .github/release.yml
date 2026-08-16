@@ -1,0 +1,26 @@
+changelog:
+  exclude:
+    labels:
+      - skip-release-notes
+  categories:
+    - title: 破坏性变更
+      labels:
+        - breaking-change
+        - semver-major
+    - title: 新功能与改进
+      labels:
+        - enhancement
+        - feature
+    - title: 问题修复
+      labels:
+        - bug
+        - fix
+    - title: 文档
+      labels:
+        - documentation
+    - title: 依赖更新
+      labels:
+        - dependencies
+    - title: 其他变更
+      labels:
+        - "*"

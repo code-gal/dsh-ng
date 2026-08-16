@@ -41,6 +41,12 @@ internal abstract class PlatformServicesBase : IPlatformServices
 
     public virtual Task<PlatformOperationResult> UnregisterInstallationAsync(string productId, CancellationToken cancellationToken = default) =>
         Task.FromResult(PlatformOperationResult.Failure($"{Kind} installation registration is not available in this build."));
+
+    public virtual Task<PlatformOperationResult> RegisterShortcutsAsync(ShortcutRegistration registration, CancellationToken cancellationToken = default) =>
+        Task.FromResult(PlatformOperationResult.Success());
+
+    public virtual Task<PlatformOperationResult> UnregisterShortcutsAsync(string displayName, CancellationToken cancellationToken = default) =>
+        Task.FromResult(PlatformOperationResult.Success());
 }
 
 /// <summary>
@@ -154,6 +160,18 @@ internal sealed class WindowsPlatformServices : PlatformServicesBase
         {
             return Task.FromResult(PlatformOperationResult.Failure(exception.Message));
         }
+    }
+
+    public override Task<PlatformOperationResult> RegisterShortcutsAsync(ShortcutRegistration registration, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(WindowsShellShortcuts.Register(registration));
+    }
+
+    public override Task<PlatformOperationResult> UnregisterShortcutsAsync(string displayName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(WindowsShellShortcuts.Unregister(displayName));
     }
 
     private static string BuildCommand(string executablePath, IReadOnlyList<string> arguments)

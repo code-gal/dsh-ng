@@ -8,7 +8,8 @@
 - Windows `win-x64` 提供 Native AOT 和 .NET 依赖两种单 EXE 安装器；两者都由 Native AOT `DshDesktop.SetupHost` 承载。当前可在 GitHub 发布明确标记的“未签名社区预览”，并必须提供 SHA-256 与 SmartScreen 风险说明。
 - macOS 仅保留源码级兼容性实现，不属于当前项目的打包、发布或验证范围；有兴趣的开发者可自行构建和验证。
 - `artifacts/installer/` 是本地发行输出，已被 Git 忽略；安装器、校验文件和签名副产物不得提交。
-- 当前没有自动发布工作流。真实安装验收和 GitHub Release 上传均由维护者手动完成；将来取得证书后才增加签名与公证步骤。
+- 真实安装验收由维护者在推送标签前手动完成；`desktop-v*` 标签触发 GitHub Actions 自动重建双安装器、生成校验值和 Release Notes，并创建 GitHub Release 与上传附件。
+- 自动任务不持有签名私钥，因此当前只发布未签名社区预览；将来取得证书后，签名必须迁移到受控签名环境或经过审批的签名任务。
 
 ## 2. 开发环境
 
@@ -124,22 +125,22 @@ macOS 不生成安装包、不发布 GitHub Release 附件，也不纳入项目�
 3. 确认安装器没有终端窗口或第二套向导；.NET 依赖包在缺少 Runtime 时应由 SetupHost 在创建产品目录前显示前置条件错误。
 4. 检查 SHA-256。若未来提供 Windows 证书，再检查 Authenticode 状态。
 5. 创建并推送 `desktop-v<SemVer>` 标签，例如 `desktop-v0.9.1`。
-6. 在 GitHub 手动创建同名 Release，上传 Windows 安装器与 `.sha256`，在标题和首段标记“未签名社区预览”，注明 Node.js/.NET Runtime 前置条件、SmartScreen 风险、SHA-256 校验步骤和“绝不导入根证书”。
+6. 等待 `DSH Desktop Release` GitHub Actions 工作流从该标签重建 AOT/.NET 两个安装器、生成 `.sha256`、提交摘要和 GitHub 自动 Release Notes，并创建同名未签名社区预览 Release。
+7. 检查 Release 的四个附件、前置条件、SmartScreen/签名警告和提交范围。自动发布失败时修复后使用新版本重新发布，不替换已发布标签或附件。
 
 已发布标签和同名附件不得替换；修复使用新的版本号。不要上传 PDB、发布缓存、未标记的未签名包或任何包含私钥的文件。
 
-## 7. CI/CD 当前状态与后续边界
+## 7. CI/CD 边界
 
-当前仓库没有自动 CI/CD 或自动 GitHub Release 工作流。这是有意的：未来的发布签名密钥不应交给普通 CI 运行器。
+`.github/workflows/desktop-release.yml` 只在 `desktop-v*` 标签上运行，并授予最小的 `contents: write` 权限。工作流会：
 
-未来可以添加不持有签名私钥的 CI 门禁，建议仅在 `dsh-ng-desktop/**` 变更或 `desktop-v*` 标签上触发，并至少执行：
+- 校验标签符合 `desktop-v<SemVer>`；
+- 在 Windows Runner 使用 .NET 10 构建 `win-x64` Native AOT 与 .NET 依赖安装器；
+- 验证两个 EXE 和两个 `.sha256` 均存在；
+- 以前一个桌面标签为起点生成路径限定的提交摘要，并让 GitHub 按 `.github/release.yml` 生成合并请求分类和贡献者记录；
+- 创建标记为“未签名社区预览”的预发布 Release 并上传四个附件。
 
-- Windows `win-x64` 的普通构建；
-- Windows `win-x64` Native AOT 发布验证；
-- 不含签名凭据的静态检查与测试；
-- 仅上传短期保留的未签名测试工件，不创建正式 Release。
-
-最终 SHA-256、Windows `win-x64` 人在环安装/卸载验收和 GitHub Release 上传仍应留在受控的目标系统上手动完成；未来启用的 Windows 正式签名也应留在受控目标系统。
+标签就是维护者确认真实 Windows 人在环验收已经通过的发布授权；CI 成功不能替代该验收。普通 CI Runner 不接收长期签名私钥。未来启用 Windows 正式签名时，应使用受控目标系统或带人工审批和硬件/云签名服务的独立任务，再调整 Release 的预发布与签名说明。
 
 ## 8. 常见问题
 

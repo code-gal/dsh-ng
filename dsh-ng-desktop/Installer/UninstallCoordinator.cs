@@ -48,6 +48,12 @@ public sealed class UninstallCoordinator
             return PlatformOperationResult.Failure($"The DSH Desktop login startup entry could not be removed: {startup.Error}");
         }
 
+        var shortcuts = await _platformServices.UnregisterShortcutsAsync("DSH Desktop", cancellationToken).ConfigureAwait(false);
+        if (!shortcuts.Succeeded)
+        {
+            return PlatformOperationResult.Failure($"The DSH Desktop shortcuts could not be removed: {shortcuts.Error}");
+        }
+
         var installation = await _platformServices.UnregisterInstallationAsync(_paths.ProductId, cancellationToken).ConfigureAwait(false);
         if (!installation.Succeeded)
         {

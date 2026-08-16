@@ -44,12 +44,22 @@ public partial class MainWindow : Window
             Show();
         }
 
+        _windowPresented = true;
+        ApplySnapshot(Runtime.Coordinator.Snapshot);
         Activate();
+    }
+
+    public void HideToTray()
+    {
+        _windowPresented = false;
+        DestroyWebView();
+        Hide();
     }
 
     public void DestroyWebViewForExit()
     {
         _closingForExit = true;
+        _windowPresented = false;
         DestroyWebView();
     }
 
@@ -193,7 +203,7 @@ public partial class MainWindow : Window
         }
 
         eventArgs.Cancel = true;
-        Hide();
+        HideToTray();
     }
 
     private void MainWindow_OnOpened(object? sender, EventArgs eventArgs)

@@ -135,7 +135,7 @@ internal sealed class App : Application
         {
             if (_mainWindow?.IsVisible == true)
             {
-                _mainWindow.Hide();
+                _mainWindow.HideToTray();
             }
         });
     }
