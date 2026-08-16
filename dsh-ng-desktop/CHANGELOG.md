@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-08-17
+
+### Fixed
+
+- 修复 macOS 上 DSH 进程启动器首次真实执行即崩溃的问题：Darwin 的 `posix_spawn` 系列函数要求传入 `posix_spawn_file_actions_t *`/`posix_spawnattr_t *`（不透明句柄的地址），此前按值传句柄导致 libSystem 将句柄误当 `void**` 解引用而段错误。现全部改为按地址传递，`posix_spawn` 的 file actions 与 attributes 参数同步修正。该缺陷曾使 macOS Release 门禁测试宿主崩溃。
+
 ## [0.9.16] - 2026-08-17
 
 ### Fixed

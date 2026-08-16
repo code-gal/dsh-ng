@@ -54,24 +54,24 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
             EnsureNativeSuccess(NativePipe.Pipe(ref stdout), "pipe(stdout)");
             EnsureNativeSuccess(NativePipe.Pipe(ref stderr), "pipe(stderr)");
             EnsureNativeSuccess(NativePipe.FileActionsInit(out fileActions), "posix_spawn_file_actions_init");
-            EnsureNativeSuccess(NativePipe.FileActionsAddChdir(fileActions, request.WorkingDirectory), "posix_spawn_file_actions_addchdir_np");
-            EnsureNativeSuccess(NativePipe.FileActionsAddDup2(fileActions, stdout.Write, 1), "posix_spawn_file_actions_adddup2(stdout)");
-            EnsureNativeSuccess(NativePipe.FileActionsAddClose(fileActions, stdout.Read), "posix_spawn_file_actions_addclose(stdout)");
+            EnsureNativeSuccess(NativePipe.FileActionsAddChdir(ref fileActions, request.WorkingDirectory), "posix_spawn_file_actions_addchdir_np");
+            EnsureNativeSuccess(NativePipe.FileActionsAddDup2(ref fileActions, stdout.Write, 1), "posix_spawn_file_actions_adddup2(stdout)");
+            EnsureNativeSuccess(NativePipe.FileActionsAddClose(ref fileActions, stdout.Read), "posix_spawn_file_actions_addclose(stdout)");
             if (stdout.Write != 1)
             {
-                EnsureNativeSuccess(NativePipe.FileActionsAddClose(fileActions, stdout.Write), "posix_spawn_file_actions_addclose(stdout-write)");
+                EnsureNativeSuccess(NativePipe.FileActionsAddClose(ref fileActions, stdout.Write), "posix_spawn_file_actions_addclose(stdout-write)");
             }
 
-            EnsureNativeSuccess(NativePipe.FileActionsAddDup2(fileActions, stderr.Write, 2), "posix_spawn_file_actions_adddup2(stderr)");
-            EnsureNativeSuccess(NativePipe.FileActionsAddClose(fileActions, stderr.Read), "posix_spawn_file_actions_addclose(stderr)");
+            EnsureNativeSuccess(NativePipe.FileActionsAddDup2(ref fileActions, stderr.Write, 2), "posix_spawn_file_actions_adddup2(stderr)");
+            EnsureNativeSuccess(NativePipe.FileActionsAddClose(ref fileActions, stderr.Read), "posix_spawn_file_actions_addclose(stderr)");
             if (stderr.Write != 2)
             {
-                EnsureNativeSuccess(NativePipe.FileActionsAddClose(fileActions, stderr.Write), "posix_spawn_file_actions_addclose(stderr-write)");
+                EnsureNativeSuccess(NativePipe.FileActionsAddClose(ref fileActions, stderr.Write), "posix_spawn_file_actions_addclose(stderr-write)");
             }
 
             EnsureNativeSuccess(NativePipe.AttributesInit(out attributes), "posix_spawnattr_init");
-            EnsureNativeSuccess(NativePipe.AttributesSetFlags(attributes, PosixSpawnSetProcessGroup), "posix_spawnattr_setflags");
-            EnsureNativeSuccess(NativePipe.AttributesSetProcessGroup(attributes, 0), "posix_spawnattr_setpgroup");
+            EnsureNativeSuccess(NativePipe.AttributesSetFlags(ref attributes, PosixSpawnSetProcessGroup), "posix_spawnattr_setflags");
+            EnsureNativeSuccess(NativePipe.AttributesSetProcessGroup(ref attributes, 0), "posix_spawnattr_setpgroup");
 
             using var nativeArguments = NativeStringVector.Create(argv);
             using var nativeEnvironment = NativeStringVector.Create(environment.Select(pair => $"{pair.Key}={pair.Value}"));
@@ -79,8 +79,8 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
                 NativePipe.PosixSpawn(
                     out spawnedProcessId,
                     request.NpxExecutable,
-                    fileActions,
-                    attributes,
+                    ref fileActions,
+                    ref attributes,
                     nativeArguments.Pointer,
                     nativeEnvironment.Pointer),
                 "posix_spawn");
@@ -119,12 +119,12 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
             CloseDescriptor(ref stderr.Write);
             if (fileActions != 0)
             {
-                NativePipe.FileActionsDestroy(fileActions);
+                NativePipe.FileActionsDestroy(ref fileActions);
             }
 
             if (attributes != 0)
             {
-                NativePipe.AttributesDestroy(attributes);
+                NativePipe.AttributesDestroy(ref attributes);
             }
         }
     }
@@ -246,6 +246,10 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
 
     private static partial class NativePipe
     {
+        // Darwin's posix_spawn API family takes posix_spawn_file_actions_t */
+        // and posix_spawnattr_t * (the address of the opaque handle), not the
+        // handle by value. Passing the handle itself makes libSystem
+        // dereference it as void** and crash the process.
         [LibraryImport("libSystem.B.dylib", EntryPoint = "pipe", SetLastError = true)]
         internal static partial int Pipe(ref PipeDescriptors descriptors);
 
@@ -256,35 +260,35 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
         internal static partial int FileActionsInit(out nint actions);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawn_file_actions_destroy", SetLastError = true)]
-        internal static partial int FileActionsDestroy(nint actions);
+        internal static partial int FileActionsDestroy(ref nint actions);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawn_file_actions_adddup2", SetLastError = true)]
-        internal static partial int FileActionsAddDup2(nint actions, int fileDescriptor, int newFileDescriptor);
+        internal static partial int FileActionsAddDup2(ref nint actions, int fileDescriptor, int newFileDescriptor);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawn_file_actions_addclose", SetLastError = true)]
-        internal static partial int FileActionsAddClose(nint actions, int fileDescriptor);
+        internal static partial int FileActionsAddClose(ref nint actions, int fileDescriptor);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawn_file_actions_addchdir_np", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial int FileActionsAddChdir(nint actions, string path);
+        internal static partial int FileActionsAddChdir(ref nint actions, string path);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawnattr_init", SetLastError = true)]
         internal static partial int AttributesInit(out nint attributes);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawnattr_destroy", SetLastError = true)]
-        internal static partial int AttributesDestroy(nint attributes);
+        internal static partial int AttributesDestroy(ref nint attributes);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawnattr_setflags", SetLastError = true)]
-        internal static partial int AttributesSetFlags(nint attributes, short flags);
+        internal static partial int AttributesSetFlags(ref nint attributes, short flags);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawnattr_setpgroup", SetLastError = true)]
-        internal static partial int AttributesSetProcessGroup(nint attributes, int processGroup);
+        internal static partial int AttributesSetProcessGroup(ref nint attributes, int processGroup);
 
         [LibraryImport("libSystem.B.dylib", EntryPoint = "posix_spawn", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
         internal static partial int PosixSpawn(
             out int processId,
             string path,
-            nint fileActions,
-            nint attributes,
+            ref nint fileActions,
+            ref nint attributes,
             nint arguments,
             nint environment);
 
