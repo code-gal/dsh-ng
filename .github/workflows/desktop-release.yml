@@ -152,7 +152,18 @@ jobs:
           dotnet restore dsh-ng-desktop/ReleaseTests/DshNgDesktop.ReleaseTests.csproj \
             -r osx-arm64 --configfile dsh-ng-desktop/NuGet.Config
           dotnet test dsh-ng-desktop/ReleaseTests/DshNgDesktop.ReleaseTests.csproj \
-            -r osx-arm64 --no-restore
+            -r osx-arm64 --no-restore \
+            --blame-crash --blame-crash-dump-type mini --blame-hang --blame-hang-dump-type mini \
+            --results-directory release-test-results
+
+      - name: Upload macOS test host crash diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-macos-test-diagnostics-${{ needs.prepare.outputs.version }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: release-test-results/**
 
       - name: Upload internal macOS dSYM verification artifact
         uses: actions/upload-artifact@v4
