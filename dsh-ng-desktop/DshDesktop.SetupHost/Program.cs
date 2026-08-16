@@ -88,6 +88,8 @@ internal static class Program
     private static void ValidateManifest(SetupPayloadManifest manifest)
     {
         if (manifest.SchemaVersion != 1 ||
+            string.IsNullOrWhiteSpace(manifest.ProductVersion) ||
+            (manifest.BuildFlavor != "Aot" && manifest.BuildFlavor != "DotNet") ||
             string.IsNullOrWhiteSpace(manifest.MainExecutableRelativePath) ||
             manifest.Files.Count == 0 ||
             manifest.RequiredLaunchFiles.Count == 0)
@@ -289,7 +291,11 @@ internal static class Program
                     "--install",
                     "--installer-session",
                     "--payload",
-                    stagingDirectory
+                    stagingDirectory,
+                    "--package-version",
+                    manifest.ProductVersion,
+                    "--build-flavor",
+                    manifest.BuildFlavor
                 }
             });
             if (process is null)
@@ -460,6 +466,10 @@ internal sealed class SetupPayloadManifest
 {
     public int SchemaVersion { get; init; }
 
+    public string ProductVersion { get; init; } = string.Empty;
+
+    public string BuildFlavor { get; init; } = string.Empty;
+
     public bool RequiresDotNetDesktopRuntime { get; init; }
 
     public int RequiredDotNetDesktopMajorVersion { get; init; }
@@ -480,7 +490,7 @@ internal sealed class SetupPayloadFile
     public string Sha256 { get; init; } = string.Empty;
 }
 
-[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true)]
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(SetupPayloadManifest))]
 internal sealed partial class SetupPayloadJsonContext : JsonSerializerContext;
 

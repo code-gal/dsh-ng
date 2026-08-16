@@ -80,11 +80,29 @@ public enum ExistingDataHandling
     FreshInstall
 }
 
+public sealed record InstallMaintenanceAcquisition(
+    bool Succeeded,
+    string? Error,
+    IAsyncDisposable? Lease)
+{
+    public static InstallMaintenanceAcquisition Success(IAsyncDisposable lease) => new(true, null, lease);
+
+    public static InstallMaintenanceAcquisition Failure(string error) => new(false, error, null);
+}
+
+public interface IInstallMaintenanceCoordinator
+{
+    Task<InstallMaintenanceAcquisition> AcquireAsync(
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record SetupCoordinatorOptions(
     string PayloadDirectory,
     string InstalledExecutablePath,
     string DisplayName,
-    string UninstallCommand)
+    string UninstallCommand,
+    InstallPackageMetadata? PackageMetadata = null)
 {
     public static SetupCoordinatorOptions CreateDefault(AppPaths paths, string? payloadDirectory = null)
     {

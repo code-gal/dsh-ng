@@ -55,7 +55,9 @@ function Get-RelativePayloadPath {
 function Get-PayloadManifest {
     param(
         [string]$PublishDirectory,
-        [bool]$RequiresDotNetDesktopRuntime
+        [bool]$RequiresDotNetDesktopRuntime,
+        [string]$ProductVersion,
+        [string]$BuildFlavor
     )
 
     $payloadFiles = @(
@@ -87,6 +89,8 @@ function Get-PayloadManifest {
     # the Avalonia installer, including the primary EXE and native libraries.
     return [ordered]@{
         SchemaVersion = 1
+        ProductVersion = $ProductVersion
+        BuildFlavor = $BuildFlavor
         RequiresDotNetDesktopRuntime = $RequiresDotNetDesktopRuntime
         RequiredDotNetDesktopMajorVersion = 10
         MainExecutableRelativePath = $mainExecutable
@@ -131,6 +135,7 @@ try {
         '-r', $RuntimeIdentifier,
         '--no-restore',
         "-p:DshPublishMode=$Mode",
+        "-p:Version=$normalizedVersion",
         "-p:SelfContained=$selfContained",
         '-p:PublishSingleFile=true',
         '-p:DebugType=None',
@@ -141,7 +146,7 @@ try {
     Get-ChildItem -LiteralPath $clientPublishDirectory -Filter '*.pdb' -File -Recurse |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
 
-    $manifest = Get-PayloadManifest -PublishDirectory $clientPublishDirectory -RequiresDotNetDesktopRuntime ($Mode -eq 'DotNet')
+    $manifest = Get-PayloadManifest -PublishDirectory $clientPublishDirectory -RequiresDotNetDesktopRuntime ($Mode -eq 'DotNet') -ProductVersion $normalizedVersion -BuildFlavor $Mode
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $payloadManifest -Encoding utf8
     [System.IO.Compression.ZipFile]::CreateFromDirectory(
         $clientPublishDirectory,

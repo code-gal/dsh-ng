@@ -5,6 +5,22 @@ namespace DshNgDesktop.Core;
 
 public sealed record ManagedPathRecord(ManagedPathKind Kind, string Path);
 
+public enum ClientBuildFlavor
+{
+    Unknown,
+    Aot,
+    DotNet
+}
+
+public sealed record InstallPackageMetadata(string? ProductVersion, ClientBuildFlavor BuildFlavor)
+{
+    public static InstallPackageMetadata Unknown { get; } = new(null, ClientBuildFlavor.Unknown);
+
+    public bool HasVersion => !string.IsNullOrWhiteSpace(ProductVersion);
+
+    public bool HasBuildFlavor => BuildFlavor != ClientBuildFlavor.Unknown;
+}
+
 /// <summary>
 /// A persisted allow-list for uninstall.  Cleanup must validate this manifest
 /// against the current product paths before it can remove any directory.
@@ -17,11 +33,21 @@ public sealed record InstallManifest(
 {
     public const int CurrentSchemaVersion = 1;
 
-    public static InstallManifest Create(AppPaths paths) => new(
+    // These optional fields extend the existing schema without invalidating
+    // manifests created by earlier releases.
+    public string? ProductVersion { get; init; }
+
+    public ClientBuildFlavor BuildFlavor { get; init; } = ClientBuildFlavor.Unknown;
+
+    public static InstallManifest Create(AppPaths paths, InstallPackageMetadata? package = null) => new(
         CurrentSchemaVersion,
         paths.ProductId,
         DateTimeOffset.UtcNow,
-        paths.ManagedPaths.Select(item => new ManagedPathRecord(item.Key, item.Value)).ToList());
+        paths.ManagedPaths.Select(item => new ManagedPathRecord(item.Key, item.Value)).ToList())
+    {
+        ProductVersion = package?.ProductVersion,
+        BuildFlavor = package?.BuildFlavor ?? ClientBuildFlavor.Unknown
+    };
 
     public async Task SaveAsync(AppPaths paths, CancellationToken cancellationToken = default)
     {

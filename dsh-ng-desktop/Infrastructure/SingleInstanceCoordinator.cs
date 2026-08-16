@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
+using DshNgDesktop.Installer;
 
 namespace DshNgDesktop.Infrastructure;
 
@@ -9,7 +10,7 @@ public sealed class InstanceCommandRequestedEventArgs(string command) : EventArg
     public string Command { get; } = command;
 
     /// <summary>
-    /// Uninstall handlers set this only after they have scheduled the owned
+    /// Shutdown handlers set this only after they have scheduled the owned
     /// runtime for shutdown. Activation commands are always accepted.
     /// </summary>
     public bool Accepted { get; set; }
@@ -21,18 +22,22 @@ public sealed record InstanceCommandRequestResult(bool Delivered, bool Accepted,
 /// Owns one per-user mutex and a local named-pipe listener. A later launch can
 /// request activation, but cannot create a second DSH supervisor.
 /// </summary>
-public sealed class SingleInstanceCoordinator : IAsyncDisposable
+public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMaintenanceCoordinator
 {
     private const string ActivationCommand = "activate";
     private const string UninstallCommand = "uninstall";
+    private const string InstallMaintenanceCommand = "install-maintenance";
     private const string AcceptedResponse = "accepted";
     private const string RejectedResponse = "rejected";
     private readonly string _mutexName;
     private readonly string _pipeName;
+    private readonly string _maintenanceName;
     private Mutex? _mutex;
+    private Semaphore? _maintenanceSemaphore;
     private CancellationTokenSource? _listenerCancellation;
     private Task? _listenerTask;
     private bool _isPrimary;
+    private int _maintenanceGateHeld;
 
     public SingleInstanceCoordinator(string productId)
     {
@@ -41,11 +46,14 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
         var nameHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{productId}:{Environment.UserName}")))[..24];
         _mutexName = $"dsh-ng-desktop-{nameHash}-instance";
         _pipeName = $"dsh-ng-desktop-{nameHash}-activation";
+        _maintenanceName = $"dsh-ng-desktop-{nameHash}-maintenance";
     }
 
     public event EventHandler<InstanceCommandRequestedEventArgs>? ActivationRequested;
 
     public event EventHandler<InstanceCommandRequestedEventArgs>? UninstallRequested;
+
+    public event EventHandler<InstanceCommandRequestedEventArgs>? InstallMaintenanceRequested;
 
     public bool IsPrimary => _isPrimary;
 
@@ -56,18 +64,31 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
             throw new InvalidOperationException("This coordinator has already attempted instance acquisition.");
         }
 
-        _mutex = new Mutex(initiallyOwned: true, _mutexName, out var createdNew);
-        if (!createdNew)
+        var gate = GetMaintenanceSemaphore();
+        if (!gate.WaitOne(0))
         {
-            _mutex.Dispose();
-            _mutex = null;
             return false;
         }
 
-        _isPrimary = true;
-        _listenerCancellation = new CancellationTokenSource();
-        _listenerTask = Task.Run(() => ListenAsync(_listenerCancellation.Token));
-        return true;
+        try
+        {
+            _mutex = new Mutex(initiallyOwned: true, _mutexName, out var createdNew);
+            if (!createdNew)
+            {
+                _mutex.Dispose();
+                _mutex = null;
+                return false;
+            }
+
+            _isPrimary = true;
+            _listenerCancellation = new CancellationTokenSource();
+            _listenerTask = Task.Run(() => ListenAsync(_listenerCancellation.Token));
+            return true;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task<bool> RequestActivationAsync(CancellationToken cancellationToken = default)
@@ -85,6 +106,70 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
     public Task<InstanceCommandRequestResult> RequestUninstallAsync(CancellationToken cancellationToken = default) =>
         RequestCommandAsync(UninstallCommand, cancellationToken);
 
+    public Task<InstanceCommandRequestResult> RequestInstallMaintenanceAsync(CancellationToken cancellationToken = default) =>
+        RequestCommandAsync(InstallMaintenanceCommand, cancellationToken);
+
+    public async Task<InstallMaintenanceAcquisition> AcquireAsync(
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        var gate = GetMaintenanceSemaphore();
+        var gateDeadline = DateTimeOffset.UtcNow + timeout;
+        var acquired = false;
+        while (DateTimeOffset.UtcNow < gateDeadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (gate.WaitOne(0))
+            {
+                acquired = true;
+                break;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!acquired)
+        {
+            return InstallMaintenanceAcquisition.Failure("安装维护锁在限定时间内不可用，可能已有其他安装事务正在运行。");
+        }
+
+        Interlocked.Exchange(ref _maintenanceGateHeld, 1);
+        try
+        {
+            var request = await RequestInstallMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+            if (request.Delivered && !request.Accepted)
+            {
+                ReleaseMaintenanceGate();
+                return InstallMaintenanceAcquisition.Failure(request.Error ?? "正在运行的客户端拒绝安装维护请求。");
+            }
+
+            var deadline = DateTimeOffset.UtcNow + timeout;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsPrimaryMutexAvailable())
+                {
+                    return InstallMaintenanceAcquisition.Success(new MaintenanceLease(this));
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+            }
+
+            ReleaseMaintenanceGate();
+            return InstallMaintenanceAcquisition.Failure("正在运行的客户端未在限定时间内退出。");
+        }
+        catch
+        {
+            ReleaseMaintenanceGate();
+            throw;
+        }
+    }
+
     /// <summary>
     /// Attempts to own the same per-user mutex used by the desktop host. An
     /// uninstall helper holds this lease from the point at which no running
@@ -98,16 +183,34 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(timeout));
         }
 
+        var gate = GetMaintenanceSemaphore();
+        if (!gate.WaitOne(timeout))
+        {
+            return false;
+        }
+
+        Interlocked.Exchange(ref _maintenanceGateHeld, 1);
         _mutex ??= new Mutex(initiallyOwned: false, _mutexName);
         try
         {
-            return _mutex.WaitOne(timeout);
+            var acquired = _mutex.WaitOne(timeout);
+            if (!acquired)
+            {
+                ReleaseMaintenanceGate();
+            }
+
+            return acquired;
         }
         catch (AbandonedMutexException)
         {
             // The previous client died without releasing its handle. The OS
             // has transferred ownership, so cleanup may safely continue.
             return true;
+        }
+        catch
+        {
+            ReleaseMaintenanceGate();
+            throw;
         }
     }
 
@@ -160,6 +263,8 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
         // ReleaseMutex here: async host shutdown is permitted to continue on
         // a different thread than the one that acquired the mutex.
         _mutex?.Dispose();
+        ReleaseMaintenanceGate();
+        _maintenanceSemaphore?.Dispose();
         _isPrimary = false;
     }
 
@@ -211,6 +316,62 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
             return args.Accepted;
         }
 
+        if (string.Equals(command, InstallMaintenanceCommand, StringComparison.Ordinal) && InstallMaintenanceRequested is { } installMaintenanceRequested)
+        {
+            installMaintenanceRequested.Invoke(this, args);
+            return args.Accepted;
+        }
+
         return false;
+    }
+
+    private Semaphore GetMaintenanceSemaphore() =>
+        _maintenanceSemaphore ??= new Semaphore(1, 1, _maintenanceName);
+
+    private bool IsPrimaryMutexAvailable()
+    {
+        using var probe = new Mutex(initiallyOwned: false, _mutexName);
+        try
+        {
+            if (!probe.WaitOne(0))
+            {
+                return false;
+            }
+
+            probe.ReleaseMutex();
+            return true;
+        }
+        catch (AbandonedMutexException)
+        {
+            try
+            {
+                probe.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // The abandoned mutex has already been made available.
+            }
+
+            return true;
+        }
+    }
+
+    private void ReleaseMaintenanceGate()
+    {
+        if (Interlocked.Exchange(ref _maintenanceGateHeld, 0) == 1)
+        {
+            _maintenanceSemaphore?.Release();
+        }
+    }
+
+    private sealed class MaintenanceLease(SingleInstanceCoordinator owner) : IAsyncDisposable
+    {
+        private SingleInstanceCoordinator? _owner = owner;
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Exchange(ref _owner, null)?.ReleaseMaintenanceGate();
+            return ValueTask.CompletedTask;
+        }
     }
 }

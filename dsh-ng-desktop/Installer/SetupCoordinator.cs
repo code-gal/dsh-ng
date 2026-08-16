@@ -22,6 +22,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
     private readonly AppLog _log;
     private readonly ProductDataCleaner _dataCleaner;
     private readonly SetupCoordinatorOptions _options;
+    private readonly IInstallMaintenanceCoordinator? _installMaintenanceCoordinator;
     private readonly CancellationTokenSource _stopSource = new();
     private readonly List<Task> _pendingProgressLogs = [];
     private int _runStarted;
@@ -35,6 +36,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
     private bool _installationRegistrationAttempted;
     private InstallManifest? _manifest;
     private ClientDeploymentResult? _deploymentResult;
+    private IAsyncDisposable? _maintenanceLease;
     private SetupResult? _result;
 
     public SetupCoordinator(
@@ -46,7 +48,8 @@ public sealed class SetupCoordinator : IAsyncDisposable
         IPlatformServices platformServices,
         AppLog log,
         ProductDataCleaner dataCleaner,
-        SetupCoordinatorOptions options)
+        SetupCoordinatorOptions options,
+        IInstallMaintenanceCoordinator? installMaintenanceCoordinator = null)
     {
         _paths = paths;
         _stateMachine = stateMachine;
@@ -57,6 +60,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
         _log = log;
         _dataCleaner = dataCleaner;
         _options = options;
+        _installMaintenanceCoordinator = installMaintenanceCoordinator;
     }
 
     public event EventHandler<SetupProgress>? ProgressChanged;
@@ -64,6 +68,8 @@ public sealed class SetupCoordinator : IAsyncDisposable
     public ApplicationStateSnapshot State => _stateMachine.Snapshot;
 
     public SetupResult? Result => _result;
+
+    public InstallPackageMetadata PackageMetadata => _options.PackageMetadata ?? InstallPackageMetadata.Unknown;
 
     public void SelectExistingDataHandling(ExistingDataHandling handling)
     {
@@ -110,7 +116,7 @@ public sealed class SetupCoordinator : IAsyncDisposable
             _deploymentResult = await _deployment.DeployAsync(
                 new ClientDeploymentRequest(_options.PayloadDirectory, _paths.InstallRoot, _replaceExistingInstallRoot),
                 transactionToken).ConfigureAwait(false);
-            _manifest = InstallManifest.Create(_paths);
+            _manifest = InstallManifest.Create(_paths, PackageMetadata);
             await _log.InformationAsync(AppLogStream.Installation, "setup-client-deployed", "客户端负载已复制到本次事务拥有的安装目录。", transactionToken)
                 .ConfigureAwait(false);
 
@@ -334,6 +340,8 @@ public sealed class SetupCoordinator : IAsyncDisposable
                 "覆盖安装会保留 DSH 数据；全新安装会删除全部产品数据后重新安装。");
         }
 
+        await AcquireInstallMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+
         if (state == ExistingProductDataState.UnverifiedManifest &&
             _existingDataHandling != ExistingDataHandling.FreshInstall)
         {
@@ -390,6 +398,36 @@ public sealed class SetupCoordinator : IAsyncDisposable
                 "setup-fresh-installation-selected",
                 "用户选择全新安装：已清理旧的产品受管路径。",
                 cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task AcquireInstallMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        if (_installMaintenanceCoordinator is null || _maintenanceLease is not null)
+        {
+            return;
+        }
+
+        Publish(
+            SetupStage.Preflight,
+            "正在准备现有客户端",
+            "正在请求已运行的 DSH Desktop 退出，并等待安装维护锁。安装期间不会删除或替换仍在使用的文件。");
+        var acquisition = await _installMaintenanceCoordinator
+            .AcquireAsync(TimeSpan.FromSeconds(30), cancellationToken)
+            .ConfigureAwait(false);
+        if (!acquisition.Succeeded || acquisition.Lease is null)
+        {
+            throw new SetupOperationException(
+                $"无法安全停止已运行的 DSH Desktop：{acquisition.Error ?? "实例未确认安装维护请求。"}",
+                "请关闭正在运行的 DSH Desktop 后重试；原有安装和数据未被替换。");
+        }
+
+        _maintenanceLease = acquisition.Lease;
+        await _log.InformationAsync(
+                AppLogStream.Installation,
+                "setup-install-maintenance-acquired",
+                "已完成运行中客户端停止和安装维护锁交接。",
+                cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -506,6 +544,11 @@ public sealed class SetupCoordinator : IAsyncDisposable
         {
             _disposed = true;
             await FlushProgressLogsAsync().ConfigureAwait(false);
+            if (_maintenanceLease is not null)
+            {
+                await _maintenanceLease.DisposeAsync().ConfigureAwait(false);
+                _maintenanceLease = null;
+            }
             _stopSource.Dispose();
         }
     }

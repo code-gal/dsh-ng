@@ -29,6 +29,9 @@ internal static class Program
         var installRequested = HasFlag(args, "--install");
         var installerSession = HasFlag(args, "--installer-session");
         var developmentMode = HasFlag(args, "--development");
+        var packageMetadata = installerSession
+            ? ParsePackageMetadata(ReadStringOption(args, "--package-version"), ReadStringOption(args, "--build-flavor"))
+            : null;
         if (args.Any(argument => string.Equals(argument, "--uninstall-finalize", StringComparison.OrdinalIgnoreCase)))
         {
             RunUninstallFinalize(paths);
@@ -60,18 +63,9 @@ internal static class Program
             return;
         }
 
-        var bootstrap = new SetupApplicationBootstrap(
-            paths,
-            payloadDirectory,
-            HasFlag(args, "--background"),
-            installerSession,
-            runDesktopHost);
-        SetupApplicationBootstrap.Configure(bootstrap);
-
-        SingleInstanceCoordinator? instance = null;
+        SingleInstanceCoordinator? instance = new SingleInstanceCoordinator(paths.ProductId);
         if (!installerSession)
         {
-            instance = new SingleInstanceCoordinator(paths.ProductId);
             if (!instance.TryAcquirePrimary())
             {
                 instance.RequestActivationAsync().GetAwaiter().GetResult();
@@ -82,7 +76,19 @@ internal static class Program
             instance.ActivationRequested += (_, _) => Dispatcher.UIThread.Post(ActivateMainWindow);
             instance.UninstallRequested += (_, request) =>
                 request.Accepted = Dispatcher.UIThread.InvokeAsync(RequestApplicationUninstall).GetAwaiter().GetResult();
+            instance.InstallMaintenanceRequested += (_, request) =>
+                request.Accepted = Dispatcher.UIThread.InvokeAsync(RequestApplicationInstallMaintenance).GetAwaiter().GetResult();
         }
+
+        var bootstrap = new SetupApplicationBootstrap(
+            paths,
+            payloadDirectory,
+            HasFlag(args, "--background"),
+            installerSession,
+            runDesktopHost,
+            instance,
+            packageMetadata);
+        SetupApplicationBootstrap.Configure(bootstrap);
 
         try
         {
@@ -146,6 +152,32 @@ internal static class Program
         return false;
     }
 
+    private static bool RequestApplicationInstallMaintenance()
+    {
+        if (Application.Current is App app)
+        {
+            return app.TryRequestInstallMaintenance();
+        }
+
+        return false;
+    }
+
+    private static InstallPackageMetadata? ParsePackageMetadata(string? version, string? flavor)
+    {
+        if (string.IsNullOrWhiteSpace(version) && string.IsNullOrWhiteSpace(flavor))
+        {
+            return null;
+        }
+
+        var parsedFlavor = flavor?.Trim().ToLowerInvariant() switch
+        {
+            "aot" => ClientBuildFlavor.Aot,
+            "dotnet" => ClientBuildFlavor.DotNet,
+            _ => ClientBuildFlavor.Unknown
+        };
+        return new InstallPackageMetadata(version?.Trim(), parsedFlavor);
+    }
+
     private static string? ReadOption(IReadOnlyList<string> args, string option)
     {
         string? result = null;
@@ -171,6 +203,38 @@ internal static class Program
 
                 result = Path.GetFullPath(value);
             }
+        }
+
+        return result;
+    }
+
+    private static string? ReadStringOption(IReadOnlyList<string> args, string option)
+    {
+        string? result = null;
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (!string.Equals(args[index], option, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (result is not null)
+            {
+                throw new ArgumentException($"The {option} option may only be supplied once.");
+            }
+
+            if (index == args.Count - 1)
+            {
+                throw new ArgumentException($"The {option} option requires a value.");
+            }
+
+            var value = args[index + 1];
+            if (string.IsNullOrWhiteSpace(value) || value.StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"The {option} option requires a value.");
+            }
+
+            result = value.Trim();
         }
 
         return result;

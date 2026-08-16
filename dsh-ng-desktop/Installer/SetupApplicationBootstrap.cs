@@ -15,7 +15,9 @@ internal sealed record SetupApplicationBootstrap(
     string? PayloadDirectory,
     bool Background,
     bool InstallerSession,
-    bool RunDesktopHost)
+    bool RunDesktopHost,
+    IInstallMaintenanceCoordinator? InstallMaintenanceCoordinator = null,
+    InstallPackageMetadata? PackageMetadata = null)
 {
     private static SetupApplicationBootstrap? _current;
 
@@ -49,7 +51,11 @@ internal sealed record SetupApplicationBootstrap(
             platformServices,
             log,
             new ProductDataCleaner(Paths),
-            SetupCoordinatorOptions.CreateDefault(Paths, PayloadDirectory));
+            SetupCoordinatorOptions.CreateDefault(Paths, PayloadDirectory) with
+            {
+                PackageMetadata = PackageMetadata
+            },
+            InstallMaintenanceCoordinator);
         return new SetupRuntime(Paths, log, supervisor, coordinator);
     }
 

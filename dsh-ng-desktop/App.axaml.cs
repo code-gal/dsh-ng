@@ -165,6 +165,20 @@ internal sealed class App : Application
         return true;
     }
 
+    internal bool TryRequestInstallMaintenance()
+    {
+        // The installer has already obtained the user's confirmation. Once it
+        // requests maintenance, stop accepting runtime work and release the
+        // single-instance mutex before any installed files are replaced.
+        if (_desktopRuntime is null || _shutdownRequested)
+        {
+            return false;
+        }
+
+        _ = RequestShutdownAsync();
+        return true;
+    }
+
     private async Task RequestShutdownAsync()
     {
         if (_shutdownRequested)

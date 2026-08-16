@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using DshNgDesktop.Core;
 using DshNgDesktop.Infrastructure;
 using DshNgDesktop.Installer;
 
@@ -42,14 +43,30 @@ public partial class SetupWindow : Window
 
     private async void SetupWindow_OnOpened(object? sender, EventArgs eventArgs)
     {
-        var existingDataState = SetupLocations.InspectExistingProductData(Runtime.Paths);
-        if (existingDataState != ExistingProductDataState.None)
+        StageText.Text = "正在检查现有安装";
+        DetailText.Text = "正在读取本地安装清单、版本和构建形态。";
+        StopButton.IsVisible = false;
+        CloseButton.IsVisible = true;
+        try
         {
-            ShowExistingDataChoice(existingDataState);
-            return;
-        }
+            // Native AOT can spend observable time initializing source-
+            // generated JSON metadata. Never synchronously wait for that work
+            // from the Avalonia Opened callback.
+            var inspection = await Task.Run(InspectExistingInstallation).ConfigureAwait(true);
+            if (inspection.State != ExistingProductDataState.None)
+            {
+                ShowExistingDataChoice(inspection.State, inspection.Change);
+                return;
+            }
 
-        await StartInstallationAsync().ConfigureAwait(true);
+            await StartInstallationAsync().ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            ShowResult(SetupResult.Failure(
+                $"无法读取现有安装状态：{exception.Message}",
+                "请关闭安装器后重试；当前安装和 DSH 数据未被修改。"));
+        }
     }
 
     private async Task StartInstallationAsync()
@@ -62,7 +79,11 @@ public partial class SetupWindow : Window
         StageProgress.IsIndeterminate = true;
         try
         {
-            _result = await Runtime.Coordinator.RunAsync().ConfigureAwait(true);
+            // Cross-flavor replacement can spend several seconds in native
+            // process shutdown and directory operations. Keep every part of
+            // the transaction off the Avalonia UI thread so the window can
+            // continue repainting and accept a stop request.
+            _result = await Task.Run(() => Runtime.Coordinator.RunAsync()).ConfigureAwait(true);
             ShowResult(_result);
         }
         catch (Exception exception)
@@ -130,7 +151,7 @@ public partial class SetupWindow : Window
         RemediationText.Text = result.Remediation;
     }
 
-    private void ShowExistingDataChoice(ExistingProductDataState state)
+    private void ShowExistingDataChoice(ExistingProductDataState state, InstallChangeClassification change)
     {
         StageProgress.IsIndeterminate = false;
         StageProgress.Value = 0;
@@ -139,22 +160,51 @@ public partial class SetupWindow : Window
         PreserveDataButton.IsVisible = state != ExistingProductDataState.UnverifiedManifest;
         FreshInstallButton.IsVisible = true;
         RemediationText.IsVisible = false;
+        PreserveDataButton.Content = change.ActionText;
 
         switch (state)
         {
             case ExistingProductDataState.VerifiedInstallation:
                 StageText.Text = "检测到已完成的安装";
-                DetailText.Text = "覆盖安装会替换客户端文件并保留 DSH 配置、会话、插件、缓存和日志；全新安装会清理产品数据后重新安装，并保留当前安装日志供诊断。首次下载 DSH 依赖可能需要数分钟。";
+                DetailText.Text = $"{change.DetailText} 全新安装会清理产品数据后重新安装，并保留当前安装日志供诊断。首次下载 DSH 依赖可能需要数分钟。";
                 break;
             case ExistingProductDataState.InterruptedInstallation:
                 StageText.Text = "检测到未完成的旧安装";
-                DetailText.Text = "可覆盖安装并保留已有 DSH 数据，或选择全新安装以清理旧的 DSH Desktop 产品数据；当前安装日志会保留供诊断。首次下载 DSH 依赖可能需要数分钟。";
+                DetailText.Text = $"{change.DetailText} 也可选择全新安装以清理旧的 DSH Desktop 产品数据；当前安装日志会保留供诊断。首次下载 DSH 依赖可能需要数分钟。";
                 break;
             default:
                 StageText.Text = "检测到无法验证的安装清单";
                 DetailText.Text = "为了避免覆盖来源不明的数据，只能选择全新安装；该操作会清理 DSH Desktop 的产品目录。";
                 break;
         }
+    }
+
+    private ExistingInstallationInspection InspectExistingInstallation()
+    {
+        var state = SetupLocations.InspectExistingProductData(Runtime.Paths);
+        var change = state == ExistingProductDataState.None
+            ? InstallPackageClassifier.Classify(null, Runtime.Coordinator.PackageMetadata)
+            : GetInstallChangeClassification();
+        return new ExistingInstallationInspection(state, change);
+    }
+
+    private InstallChangeClassification GetInstallChangeClassification()
+    {
+        InstallPackageMetadata? installed = null;
+        try
+        {
+            var manifest = InstallManifest.LoadAsync(Runtime.Paths).GetAwaiter().GetResult();
+            if (manifest is not null)
+            {
+                installed = new InstallPackageMetadata(manifest.ProductVersion, manifest.BuildFlavor);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            // The state picker already treats this as an unverified manifest.
+        }
+
+        return InstallPackageClassifier.Classify(installed, Runtime.Coordinator.PackageMetadata);
     }
 
     private async void PreserveDataButton_OnClick(object? sender, RoutedEventArgs eventArgs)
@@ -363,4 +413,8 @@ public partial class SetupWindow : Window
         _webUiWaitStartedAt = null;
         ElapsedText.IsVisible = false;
     }
+
+    private sealed record ExistingInstallationInspection(
+        ExistingProductDataState State,
+        InstallChangeClassification Change);
 }
