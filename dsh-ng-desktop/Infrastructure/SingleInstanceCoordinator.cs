@@ -51,7 +51,11 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable, IInstallMainte
 
         var nameHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{productId}:{Environment.UserName}")))[..24];
         _mutexName = $"dsh-ng-desktop-{nameHash}-instance";
-        _pipeName = $"dsh-ng-desktop-{nameHash}-activation";
+        // macOS maps pipe names to $TMPDIR/CoreFxPipe_<name> Unix domain
+        // sockets, which are capped at 104 chars by sun_path. Long TMPDIRs
+        // (e.g. GitHub Actions runners) overflow it, so keep this short;
+        // nameHash already encodes productId and user, so it stays unique.
+        _pipeName = $"dsh-ng-{nameHash}";
         _maintenanceName = $"dsh-ng-desktop-{nameHash}-maintenance";
         // Do not use Path.GetTempPath() here. macOS assigns TMPDIR per login
         // session, so Finder, launchd and the pkg bootstrap could otherwise

@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-08-17
+
+### Fixed
+
+- 修复 macOS 上 DSH 进程输出管道读取失败：Unix 管道描述符为同步句柄，`FileStream` 不再以异步方式打开管道读端。
+- 修复 macOS 上单实例/维护锁 IPC 管道路径超出 Unix domain socket `sun_path` 104 字符上限的问题：在长 `TMPDIR` 环境（如 CI Runner 或部分真实用户环境）下管道名会导致 `ArgumentOutOfRangeException`。管道名缩短为 `dsh-ng-<哈希>`，哈希已包含产品 ID 与用户名，唯一性不变。
+
 ## [0.9.17] - 2026-08-17
 
 ### Fixed

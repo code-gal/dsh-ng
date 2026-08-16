@@ -160,7 +160,9 @@ public sealed partial class MacOSDshProcessLauncher : IDshProcessLauncher
     {
         var handle = new SafeFileHandle((nint)descriptor, ownsHandle: true);
         descriptor = -1;
-        return new FileStream(handle, FileAccess.Read, 4_096, isAsync: true);
+        // Unix pipe descriptors are synchronous; isAsync would require a
+        // Windows-style overlapped handle and throws ArgumentException.
+        return new FileStream(handle, FileAccess.Read, 4_096, isAsync: false);
     }
 
     private static void CloseDescriptor(ref int descriptor)
